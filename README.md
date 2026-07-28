@@ -103,3 +103,5 @@ Before running a bare `npx skills update`, existing manual modifications must go
 Archaeology pauses on an unexplained Rendering hash, asks the user to confirm authorship, compares every changed physical Rendering with latest upstream, and records only individually approved semantic outcomes. Recovery regenerates all copies from upstream plus approved Intents; it never preserves unknown workspace bytes as a patch.
 
 Managed removal is scope-explicit and previewed before mutation. It surfaces durable Intents, project suppressions, inherited exposure, and installations in the other scope; confirmed removal delegates to `skills@1.5.20` and reconciles every recorded Rendering, managed-state entry, and upstream lock entry only after filesystem removal succeeds.
+
+Interrupted publication recovery uses the durable desired-Rendering hash rather than a transaction registry. A later update can atomically heal old independent copies from any complete desired copy; if none exists it regenerates from latest upstream and Effective Intents, while any third unexplained hash stops as an Untracked change.

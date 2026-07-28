@@ -131,6 +131,7 @@ node <skill-directory>/scripts/skills-manager.mjs update --skill <installed-skil
 Act on the result:
 
 - `complete` with `data.noChange`: The installed Rendering, upstream revision, and Effective intents already agree. Do not request a work order or publication.
+- `complete` with `data.recovered`: A prior interrupted publication was finalized from an already complete desired Rendering. Every managed copy now matches `data.renderedHash`; do not fetch or publish again.
 - `ready` with `data.nextAction: "work_order"`: Active Intents must be semantically reapplied. Run `work-order`, edit only its candidate, and return one result for every Effective Intent:
 
 ```sh
@@ -140,7 +141,8 @@ node <skill-directory>/scripts/skills-manager.mjs intent-result --work-dir <work
 The result array must cover every work-order Intent exactly once. Do not collapse several semantic outcomes into one aggregate claim.
 - `needs_confirmation` with `data.review.semanticOutcome.result: "not_required"`: No Effective intents exist. Review the bare upstream total diff and publish the exact candidate after approval; do not invoke semantic rendering work.
 - `needs_confirmation` for security: Explain the normalized risk and use `continue --accept-risk` only after explicit acceptance. Continue according to the returned status.
-- `failed`: Stop. In particular, an `untracked_change` means the installed bytes must be recovered before update; never overwrite them as upstream input.
+- `conflict` with `untracked_change`: An interrupted publication encountered content matching neither the old nor desired Rendering. Stop for Archaeology; never overwrite it as recovery input.
+- `failed`: Stop and explain the technical or integrity error.
 
 If any per-Intent result is `failed`, explain each entry in `data.intents` and the conflict choices. When the user explicitly chooses to revise the semantic application, record that decision before editing again:
 

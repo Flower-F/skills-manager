@@ -31,6 +31,19 @@ function conflictError(data) {
   return error;
 }
 
+function simulateInterruption(boundary) {
+  if (process.env.SKILLS_MANAGER_SIMULATE_INTERRUPTION !== boundary) return;
+  process.stdout.write(
+    `${JSON.stringify({
+      version: 1,
+      status: 'failed',
+      command: 'publish',
+      error: { code: 'simulated_interruption', message: `Interrupted after ${boundary}.` },
+    })}\n`,
+  );
+  process.exit(86);
+}
+
 function isContained(parent, child) {
   const path = relative(parent, child);
   return path === '' || (!path.startsWith('..') && !isAbsolute(path));
@@ -876,7 +889,13 @@ export async function publishAttempt({ workDir }) {
   };
   const preparedState =
     manifest.operation.type === 'install'
-      ? nextState
+      ? {
+          version: 1,
+          skills: {
+            ...nextState.skills,
+            [identityHash]: { ...managedSkill, publicationPending: true },
+          },
+        }
       : {
           version: 1,
           skills: {
@@ -884,6 +903,7 @@ export async function publishAttempt({ workDir }) {
             [identityHash]: {
               ...managedSkill,
               renderedHash: existingManagedSkill.renderedHash,
+              publicationPending: true,
             },
           },
         };
@@ -1093,7 +1113,9 @@ export async function publishAttempt({ workDir }) {
       identityResolutionWritten = true;
     }
     await atomicWriteJson(statePath, preparedState, manifest.nonce);
+    simulateInterruption('state');
     await atomicWriteJson(lockPath, nextLock, manifest.nonce);
+    simulateInterruption('lock');
     for (let index = 0; index < targets.length; index += 1) {
       const replacement = replacementsByDirectory.get(dirname(targets[index]));
       if (replacement) {
@@ -1118,20 +1140,20 @@ export async function publishAttempt({ workDir }) {
         );
         await rename(targets[index], backup);
         targetBackups.push({ target: targets[index], backup });
+        simulateInterruption(`target_displaced:${index}`);
       }
       await rename(siblings[index], targets[index]);
       publishedTargets.push(targets[index]);
+      simulateInterruption(`target_activated:${index}`);
     }
-    for (const link of links) {
+    for (const [index, link] of links.entries()) {
       await symlink(link.target, link.absolutePath, 'dir');
       createdLinks.push(link.absolutePath);
       const resolvedLink = await realpath(link.absolutePath);
       if (!isContained(repositoryRoot, resolvedLink)) {
         throw managedError('invalid_publication_target', 'Published topology link escapes the project.');
       }
-    }
-    if (preparedState !== nextState) {
-      await atomicWriteJson(statePath, nextState, manifest.nonce);
+      simulateInterruption(`link:${index}`);
     }
   } catch (error) {
     for (const link of createdLinks.reverse()) await rm(link, { force: true });
@@ -1175,6 +1197,10 @@ export async function publishAttempt({ workDir }) {
       'publication_cleanup_failed',
       `The new Rendering is authoritative, but ${backupCleanupFailures.length} previous-Rendering backup(s) could not be removed.`,
     );
+  }
+  if (preparedState !== nextState) {
+    await atomicWriteJson(statePath, nextState, manifest.nonce);
+    simulateInterruption('final_state');
   }
   await rm(resolvedWorkDir, { recursive: true, force: true }).catch(() => {});
   return {

@@ -88,8 +88,11 @@ function writeEnvelope(envelope, exitCode = 0) {
   process.exitCode = exitCode;
 }
 
-function fail(command, code, message) {
-  writeEnvelope({ status: 'failed', command, error: { code, message } }, 1);
+function fail(command, code, message, details) {
+  writeEnvelope(
+    { status: 'failed', command, error: { code, message, ...(details ? { details } : {}) } },
+    1,
+  );
 }
 
 function parseArguments(arguments_) {
@@ -552,7 +555,12 @@ async function main() {
     if (error?.status === 'conflict') {
       writeEnvelope({ status: 'conflict', command: parsed?.command || null, data: error.data });
     } else {
-      fail(parsed?.command || process.argv[2] || null, error?.code || 'inspection_failed', error.message);
+      fail(
+        parsed?.command || process.argv[2] || null,
+        error?.code || 'inspection_failed',
+        error.message,
+        error.details,
+      );
     }
   }
 }

@@ -14,6 +14,7 @@ import {
   verifyManagedRendering,
 } from './publication.mjs';
 import { assessCandidate, loadManifest, saveManifest } from './upstream.mjs';
+import { recoverInterruptedPublication } from './recovery.mjs';
 
 const INTENT_MUTATION_TYPES = new Set([
   'intent_edit',
@@ -676,6 +677,10 @@ export async function beginUpdate({
   environment,
 }) {
   const managed = await requireManagedSkill(repositoryRoot, skill, environment);
+  const recovery = await recoverInterruptedPublication({ root: repositoryRoot, managed });
+  if (recovery.recovery === 'healed') {
+    return { envelopeStatus: 'complete', recovered: true, ...recovery };
+  }
   await locateManagedRendering({ repositoryRoot, managed });
   try {
     await verifyManagedRendering({ repositoryRoot, managed });
@@ -1243,6 +1248,7 @@ export async function prepareUpdateAttempt({ workDir }) {
   const nextEffectiveIntentsHash = effectiveIntentsHash(manifest.operation.effectiveIntents);
   if (
     manifest.operation.type === 'update' &&
+    !managed.publicationPending &&
     baselineValidation.upstreamHash === managed.upstreamHash &&
     nextEffectiveIntentsHash === managed.effectiveIntentsHash &&
     managed.renderedHash === managed.desiredRenderedHash

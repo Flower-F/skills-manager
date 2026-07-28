@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -11,6 +11,28 @@ const cli = resolve('skills/skills-manager/scripts/skills-manager.mjs');
 
 async function temporaryDirectory(prefix) {
   return mkdtemp(join(tmpdir(), prefix));
+}
+
+async function renderingHash(root) {
+  const hash = createHash('sha256');
+  async function visit(directory, prefix = '') {
+    const entries = await readdir(directory, { withFileTypes: true });
+    entries.sort((left, right) => left.name.localeCompare(right.name));
+    for (const entry of entries) {
+      const path = join(directory, entry.name);
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const info = await lstat(path);
+      if (info.isSymbolicLink()) {
+        hash.update(relativePath).update('symlink\0').update(await readlink(path));
+      } else if (info.isDirectory()) {
+        await visit(path, relativePath);
+      } else if (info.isFile()) {
+        hash.update(relativePath).update(await readFile(path));
+      }
+    }
+  }
+  await visit(root);
+  return hash.digest('hex');
 }
 
 async function fakeUpstream(workspace) {
@@ -986,6 +1008,24 @@ async function cloneManagedAlphaToGlobal(repository, globalHome) {
   return globalManaged;
 }
 
+async function installManagedAlphaCopies(repository, fake, audit) {
+  await mkdir(join(repository, '.agents/skills'), { recursive: true });
+  await mkdir(join(repository, '.claude/skills'), { recursive: true });
+  const assessed = await assessedAttempt(repository, fake, audit);
+  await runCli(['validate', '--work-dir', assessed.result.data.workDir], {
+    cwd: repository,
+    env: {},
+  });
+  await runCli(['continue', '--work-dir', assessed.result.data.workDir, '--accept-copy-mode'], {
+    cwd: repository,
+    env: {},
+  });
+  return runCli(['publish', '--work-dir', assessed.result.data.workDir, '--accept-publication'], {
+    cwd: repository,
+    env: {},
+  });
+}
+
 test('Intent input is constrained to one concise semantic outcome', async () => {
   const repository = await temporaryDirectory('skills-manager-intent-input-');
   await mkdir(join(repository, '.git'));
@@ -1824,6 +1864,270 @@ test('update does not report no-change while desired and published Rendering has
     assert.equal(repairedManaged.renderedHash, repairedManaged.desiredRenderedHash);
   } finally {
     await audit.close();
+  }
+});
+
+test('update heals interrupted desired Renderings and rejects unexplained divergent copies', async (t) => {
+  for (const scenario of ['one_desired_copy', 'all_desired_copies', 'unexplained_copy']) {
+    await t.test(scenario, async () => {
+      const repository = await temporaryDirectory(`skills-manager-recovery-${scenario}-`);
+      await mkdir(join(repository, '.git'));
+      const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+      const audit = await auditService();
+      const environment = {
+        FAKE_UPSTREAM_CALLS: fake.calls,
+        SKILLS_MANAGER_AUDIT_URL: audit.url,
+        SKILLS_MANAGER_NPX_PATH: fake.executable,
+      };
+      try {
+        await installManagedAlphaCopies(repository, fake, audit);
+        const canonical = join(repository, '.agents/skills/alpha-skill');
+        const copy = join(repository, '.claude/skills/alpha-skill');
+        await writeFile(
+          join(canonical, 'SKILL.md'),
+          '---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n# Desired complete Rendering\n',
+        );
+        const desiredHash = await renderingHash(canonical);
+        if (scenario === 'all_desired_copies') {
+          await cp(canonical, copy, { recursive: true, force: true });
+        } else if (scenario === 'unexplained_copy') {
+          await writeFile(join(copy, 'SKILL.md'), '# neither old nor desired\n');
+        }
+        const statePath = join(repository, '.skills-manager/state.json');
+        const state = JSON.parse(await readFile(statePath, 'utf8'));
+        const [managed] = Object.values(state.skills);
+        managed.desiredRenderedHash = desiredHash;
+        await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+        const callsBefore = (await readFile(fake.calls, 'utf8')).trim().split('\n').length;
+        const recovered = await runCli(
+          ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+          { cwd: repository, env: environment },
+        );
+        if (scenario === 'unexplained_copy') {
+          assert.equal(recovered.result.status, 'conflict');
+          assert.equal(recovered.result.data.reason, 'untracked_change');
+          assert.match(await readFile(join(copy, 'SKILL.md'), 'utf8'), /neither old nor desired/);
+          return;
+        }
+        assert.equal(recovered.result.status, 'complete', JSON.stringify(recovered.result));
+        assert.equal(recovered.result.data.recovered, true);
+        assert.equal(await renderingHash(canonical), desiredHash);
+        assert.equal(await renderingHash(copy), desiredHash);
+        const repaired = JSON.parse(await readFile(statePath, 'utf8'));
+        const [repairedManaged] = Object.values(repaired.skills);
+        assert.equal(repairedManaged.renderedHash, desiredHash);
+        assert.equal(repairedManaged.desiredRenderedHash, desiredHash);
+        const lock = JSON.parse(await readFile(join(repository, 'skills-lock.json'), 'utf8'));
+        assert.equal(lock.skills['alpha-skill'].computedHash, repairedManaged.upstreamHash);
+        const callsAfter = (await readFile(fake.calls, 'utf8')).trim().split('\n').length;
+        assert.equal(callsAfter, callsBefore);
+      } finally {
+        await audit.close();
+      }
+    });
+  }
+});
+
+test('recovery ignores lookalike artifacts and refuses parents that resolve outside the project', async (t) => {
+  await t.test('lookalike artifact', async () => {
+    const repository = await temporaryDirectory('skills-manager-recovery-lookalike-');
+    await mkdir(join(repository, '.git'));
+    const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+    const audit = await auditService();
+    const environment = {
+      FAKE_UPSTREAM_CALLS: fake.calls,
+      SKILLS_MANAGER_AUDIT_URL: audit.url,
+      SKILLS_MANAGER_NPX_PATH: fake.executable,
+    };
+    try {
+      await installManagedAlphaCopies(repository, fake, audit);
+      const lookalike = join(
+        repository,
+        '.agents/skills/.alpha-skill.skills-manager-not-an-artifact-0',
+      );
+      await mkdir(lookalike);
+      await writeFile(join(lookalike, 'user.txt'), 'preserve me\n');
+      await runCli(['update', '--skill', 'alpha-skill', '--runtime', 'codex'], {
+        cwd: repository,
+        env: environment,
+      });
+      assert.equal(await readFile(join(lookalike, 'user.txt'), 'utf8'), 'preserve me\n');
+    } finally {
+      await audit.close();
+    }
+  });
+
+  await t.test('external symlink parent', async () => {
+    const repository = await temporaryDirectory('skills-manager-recovery-containment-');
+    await mkdir(join(repository, '.git'));
+    const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+    const audit = await auditService();
+    const environment = {
+      FAKE_UPSTREAM_CALLS: fake.calls,
+      SKILLS_MANAGER_AUDIT_URL: audit.url,
+      SKILLS_MANAGER_NPX_PATH: fake.executable,
+    };
+    try {
+      await installManagedAlphaCopies(repository, fake, audit);
+      const external = await temporaryDirectory('skills-manager-external-parent-');
+      await rename(join(repository, '.agents'), join(repository, '.agents-original'));
+      await symlink(external, join(repository, '.agents'), 'dir');
+      const attempted = await runCli(['update', '--skill', 'alpha-skill', '--runtime', 'codex'], {
+        cwd: repository,
+        env: environment,
+      });
+      assert.equal(attempted.result.status, 'failed');
+      assert.equal(attempted.result.error.code, 'invalid_publication_target');
+      assert.deepEqual(await readdir(external), []);
+    } finally {
+      await audit.close();
+    }
+  });
+});
+
+test('the next update recovers every injected publication boundary', async (t) => {
+  const installBoundaries = ['state', 'lock', 'target_activated:0', 'link:0', 'final_state'];
+  for (const boundary of installBoundaries) {
+    await t.test(`install ${boundary}`, async () => {
+      const repository = await temporaryDirectory('skills-manager-install-interruption-');
+      await mkdir(join(repository, '.git'));
+      await mkdir(join(repository, '.claude'));
+      const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+      const audit = await auditService();
+      const environment = {
+        FAKE_UPSTREAM_CALLS: fake.calls,
+        SKILLS_MANAGER_AUDIT_URL: audit.url,
+        SKILLS_MANAGER_NPX_PATH: fake.executable,
+      };
+      try {
+        const assessed = await assessedAttempt(repository, fake, audit);
+        await runCli(['validate', '--work-dir', assessed.result.data.workDir], {
+          cwd: repository,
+          env: {},
+        });
+        const interrupted = await runCli(
+          ['publish', '--work-dir', assessed.result.data.workDir, '--accept-publication'],
+          {
+            cwd: repository,
+            env: { SKILLS_MANAGER_SIMULATE_INTERRUPTION: boundary },
+          },
+        );
+        assert.equal(interrupted.result.error.code, 'simulated_interruption');
+        const resumed = await runCli(['update', '--skill', 'alpha-skill', '--runtime', 'codex'], {
+          cwd: repository,
+          env: environment,
+        });
+        if (resumed.result.status === 'needs_confirmation') {
+          const published = await runCli(
+            ['publish', '--work-dir', resumed.result.data.workDir, '--accept-publication'],
+            { cwd: repository, env: {} },
+          );
+          assert.equal(published.result.status, 'complete', JSON.stringify(published.result));
+        } else {
+          assert.equal(resumed.result.status, 'complete', JSON.stringify(resumed.result));
+        }
+        const state = JSON.parse(await readFile(join(repository, '.skills-manager/state.json'), 'utf8'));
+        const [managed] = Object.values(state.skills);
+        assert.equal(managed.publicationPending, undefined);
+        assert.equal(managed.renderedHash, managed.desiredRenderedHash);
+        assert.ok(await lstat(join(repository, '.agents/skills/alpha-skill')));
+        assert.equal((await lstat(join(repository, '.claude/skills'))).isSymbolicLink(), true);
+        assert.equal(
+          (await readdir(join(repository, '.agents/skills'))).some((name) =>
+            name.includes('.skills-manager-'),
+          ),
+          false,
+        );
+      } finally {
+        await audit.close();
+      }
+    });
+  }
+
+  const updateBoundaries = [
+    'state',
+    'lock',
+    'target_displaced:0',
+    'target_activated:0',
+    'target_displaced:1',
+    'target_activated:1',
+    'final_state',
+  ];
+  for (const boundary of updateBoundaries) {
+    await t.test(`copy update ${boundary}`, async () => {
+      const repository = await temporaryDirectory('skills-manager-update-interruption-');
+      await mkdir(join(repository, '.git'));
+      const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+      const audit = await auditService();
+      const environment = {
+        FAKE_UPSTREAM_CALLS: fake.calls,
+        SKILLS_MANAGER_AUDIT_URL: audit.url,
+        SKILLS_MANAGER_NPX_PATH: fake.executable,
+        FAKE_UPSTREAM_SKILL_CONTENT:
+          '---\nname: alpha-skill\ndescription: Updated candidate.\n---\n\n# Updated upstream\n',
+      };
+      try {
+        await installManagedAlphaCopies(repository, fake, audit);
+        const updated = await runCli(['update', '--skill', 'alpha-skill', '--runtime', 'codex'], {
+          cwd: repository,
+          env: environment,
+        });
+        const reviewed =
+          updated.result.status === 'conflict'
+            ? await runCli(
+                ['continue', '--work-dir', updated.result.data.workDir, '--accept-copy-mode'],
+                { cwd: repository, env: {} },
+              )
+            : updated;
+        assert.equal(reviewed.result.status, 'needs_confirmation', JSON.stringify(reviewed.result));
+        const interrupted = await runCli(
+          ['publish', '--work-dir', updated.result.data.workDir, '--accept-publication'],
+          {
+            cwd: repository,
+            env: { SKILLS_MANAGER_SIMULATE_INTERRUPTION: boundary },
+          },
+        );
+        assert.equal(interrupted.result.error.code, 'simulated_interruption');
+        const resumed = await runCli(['update', '--skill', 'alpha-skill', '--runtime', 'codex'], {
+          cwd: repository,
+          env: environment,
+        });
+        if (resumed.result.status === 'conflict') {
+          assert.equal(resumed.result.data.reason, 'copy_topology_requires_confirmation');
+          const continued = await runCli(
+            ['continue', '--work-dir', resumed.result.data.workDir, '--accept-copy-mode'],
+            { cwd: repository, env: {} },
+          );
+          assert.equal(continued.result.status, 'needs_confirmation');
+          await runCli(['publish', '--work-dir', resumed.result.data.workDir, '--accept-publication'], {
+            cwd: repository,
+            env: {},
+          });
+        } else if (resumed.result.status === 'needs_confirmation') {
+          await runCli(['publish', '--work-dir', resumed.result.data.workDir, '--accept-publication'], {
+            cwd: repository,
+            env: {},
+          });
+        } else {
+          assert.equal(resumed.result.status, 'complete', JSON.stringify(resumed.result));
+        }
+        const state = JSON.parse(await readFile(join(repository, '.skills-manager/state.json'), 'utf8'));
+        const [managed] = Object.values(state.skills);
+        assert.equal(managed.publicationPending, undefined);
+        assert.equal(await renderingHash(join(repository, '.agents/skills/alpha-skill')), managed.renderedHash);
+        assert.equal(await renderingHash(join(repository, '.claude/skills/alpha-skill')), managed.renderedHash);
+        for (const directory of ['.agents/skills', '.claude/skills']) {
+          assert.equal(
+            (await readdir(join(repository, directory))).some((name) =>
+              name.includes('.skills-manager-'),
+            ),
+            false,
+          );
+        }
+      } finally {
+        await audit.close();
+      }
+    });
   }
 });
 
