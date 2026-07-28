@@ -337,7 +337,11 @@ async function main() {
       }
       const { publishAttempt } = await import('./lib/publication.mjs');
       const data = await publishAttempt({ workDir: parsed.options['work-dir'] });
-      writeEnvelope({ status: 'complete', command: 'publish', data });
+      writeEnvelope({
+        status: data.restartRequired ? 'restart_required' : 'complete',
+        command: 'publish',
+        data,
+      });
     } else if (parsed.command === 'abort') {
       if (!parsed.options['work-dir']) {
         const error = new Error('abort requires --work-dir <path>.');

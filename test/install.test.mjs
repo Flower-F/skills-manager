@@ -115,6 +115,11 @@ async function auditService() {
         socket: { alerts: 0 },
         snyk: { risk: 'low' },
       },
+      'skills-manager': {
+        ath: { risk: 'safe' },
+        socket: { alerts: 0 },
+        snyk: { risk: 'low' },
+      },
     }));
   });
   await new Promise((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
@@ -4510,6 +4515,80 @@ test('failed delegated removal preserves Rendering, state, and lock metadata', a
     assert.equal(unsafe.result.status, 'failed');
     assert.equal(unsafe.result.error.code, 'invalid_publication_target');
     assert.equal(await readFile(marker, 'utf8'), 'outside\n');
+  } finally {
+    await audit.close();
+  }
+});
+
+test('self-update publishes completely and requires an immediate Agent restart', async () => {
+  const repository = await temporaryDirectory('skills-manager-self-update-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+  };
+  try {
+    const assessed = await runCli(
+      [
+        'assess',
+        '--source',
+        'example/skills',
+        '--skill',
+        'skills-manager',
+        '--runtime',
+        'codex',
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(assessed.result.status, 'ready');
+    await runCli(['validate', '--work-dir', assessed.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    const installed = await runCli(
+      ['publish', '--work-dir', assessed.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(installed.result.status, 'complete');
+
+    const updated = await runCli(
+      ['update', '--skill', 'skills-manager', '--runtime', 'codex'],
+      {
+        cwd: repository,
+        env: {
+          ...environment,
+          FAKE_UPSTREAM_SKILL_CONTENT:
+            '---\nname: skills-manager\ndescription: Updated manager.\n---\n\n# Updated manager\n',
+        },
+      },
+    );
+    assert.equal(updated.result.status, 'needs_confirmation', JSON.stringify(updated.result));
+    const published = await runCli(
+      ['publish', '--work-dir', updated.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(published.exitCode, 0);
+    assert.equal(published.result.status, 'restart_required');
+    assert.equal(published.result.data.restartRequired, true);
+    assert.match(
+      await readFile(join(repository, '.agents/skills/skills-manager/SKILL.md'), 'utf8'),
+      /Updated manager/,
+    );
+    const state = JSON.parse(await readFile(join(repository, '.skills-manager/state.json'), 'utf8'));
+    const [managed] = Object.values(state.skills);
+    assert.equal(managed.installName, 'skills-manager');
+    assert.equal(managed.renderedHash, managed.desiredRenderedHash);
+    await assert.rejects(lstat(updated.result.data.workDir), { code: 'ENOENT' });
+    const calls = (await readFile(fake.calls, 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(calls.length, 2);
+    assert.equal(calls.every(({ telemetry }) => telemetry === '1'), true);
+    assert.equal(
+      calls.every(({ argv }) => argv[0] === '-y' && argv[1] === 'skills@1.5.20'),
+      true,
+    );
   } finally {
     await audit.close();
   }

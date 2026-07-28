@@ -1209,5 +1209,7 @@ export async function publishAttempt({ workDir }) {
     targets,
     links: plannedLinks,
     state: { upstreamHash: managedSkill.upstreamHash, renderedHash: managedSkill.renderedHash },
+    restartRequired:
+      manifest.operation.skill === 'skills-manager' && manifest.operation.type !== 'install',
   };
 }

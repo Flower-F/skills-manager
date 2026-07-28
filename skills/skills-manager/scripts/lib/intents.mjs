@@ -679,7 +679,13 @@ export async function beginUpdate({
   const managed = await requireManagedSkill(repositoryRoot, skill, environment);
   const recovery = await recoverInterruptedPublication({ root: repositoryRoot, managed });
   if (recovery.recovery === 'healed') {
-    return { envelopeStatus: 'complete', recovered: true, ...recovery };
+    const restartRequired = managed.installName === 'skills-manager';
+    return {
+      envelopeStatus: restartRequired ? 'restart_required' : 'complete',
+      recovered: true,
+      restartRequired,
+      ...recovery,
+    };
   }
   await locateManagedRendering({ repositoryRoot, managed });
   try {
