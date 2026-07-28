@@ -99,3 +99,5 @@ The initial inspection command is implemented; later managed workflows remain tr
 - [Architecture decisions](./docs/adr/)
 
 Before running a bare `npx skills update`, existing manual modifications must go through Archaeology. A bare update destroys the local difference needed to recover their Intents.
+
+Archaeology pauses on an unexplained Rendering hash, asks the user to confirm authorship, compares every changed physical Rendering with latest upstream, and records only individually approved semantic outcomes. Recovery regenerates all copies from upstream plus approved Intents; it never preserves unknown workspace bytes as a patch.

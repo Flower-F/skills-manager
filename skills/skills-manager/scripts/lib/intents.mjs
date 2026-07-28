@@ -1,12 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { lstat, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import {
   assertContainedStateDirectory,
   createCandidateSnapshot,
   diffCandidateSnapshots,
+  locateManagedRendering,
   readManagedState,
+  renderedHashForRoot,
   validateAttempt,
   validateCandidate,
   verifyManagedRendering,
@@ -21,6 +23,7 @@ const INTENT_MUTATION_TYPES = new Set([
   'intent_obsolete',
   'intent_suppress',
   'identity_migrate',
+  'archaeology',
 ]);
 
 function isManagedRenderOperation(type) {
@@ -214,10 +217,27 @@ async function currentManagedForOperation(manifest) {
     error.data = { reason: 'operation_baseline_changed', choices: ['restart', 'cancel'] };
     throw error;
   }
-  const targets = await verifyManagedRendering({
-    repositoryRoot: manifest.repositoryRoot,
-    managed: matches[0],
-  });
+  const targets =
+    manifest.operation.type === 'archaeology'
+      ? await locateManagedRendering({
+          repositoryRoot: manifest.repositoryRoot,
+          managed: matches[0],
+        })
+      : await verifyManagedRendering({
+          repositoryRoot: manifest.repositoryRoot,
+          managed: matches[0],
+        });
+  if (manifest.operation.type === 'archaeology') {
+    const currentSnapshots = await Promise.all(targets.map((target) => createCandidateSnapshot(target)));
+    const baselineSnapshots =
+      manifest.operation.untrackedRenderingSnapshots || [manifest.operation.untrackedRenderingSnapshot];
+    if (JSON.stringify(currentSnapshots) !== JSON.stringify(baselineSnapshots)) {
+      throw intentConflict({
+        reason: 'operation_baseline_changed',
+        choices: ['restart', 'cancel'],
+      });
+    }
+  }
   return { managed: matches[0], targets };
 }
 
@@ -641,7 +661,20 @@ export async function beginUpdate({
   environment,
 }) {
   const managed = await requireManagedSkill(repositoryRoot, skill, environment);
-  await verifyManagedRendering({ repositoryRoot, managed });
+  await locateManagedRendering({ repositoryRoot, managed });
+  try {
+    await verifyManagedRendering({ repositoryRoot, managed });
+  } catch (error) {
+    if (error.code !== 'untracked_change') throw error;
+    throw intentConflict({
+      reason: 'untracked_change',
+      installName: skill,
+      identity: managed.identity,
+      explanation:
+        'Installed bytes differ from the recorded Rendering and have no recorded semantic Intent. Did you author this change intentionally?',
+      choices: ['recover', 'decline', 'cancel'],
+    });
+  }
   const scoped = await readScopedIntents({
     repositoryRoot,
     managed,
@@ -673,6 +706,298 @@ export async function beginUpdate({
   return assessed.security.decision === 'approved'
     ? prepareUpdateAttempt({ workDir: assessed.workDir })
     : assessed;
+}
+
+export async function beginArchaeology({
+  repositoryRoot,
+  skill,
+  confirmOwnership,
+  declineOwnership,
+  currentRuntime,
+  environment,
+}) {
+  if (confirmOwnership === declineOwnership) {
+    throw intentError(
+      'invalid_arguments',
+      'Archaeology requires exactly one of --confirm-ownership or --decline-ownership.',
+    );
+  }
+  const managed = await requireManagedSkill(repositoryRoot, skill, environment);
+  const targets = await locateManagedRendering({ repositoryRoot, managed });
+  const observations = await Promise.all(
+    targets.map(async (target, index) => ({
+      target: managed.physicalTargets[index],
+      root: target,
+      renderedHash: await renderedHashForRoot(target),
+      snapshot: await createCandidateSnapshot(target),
+    })),
+  );
+  const changed = observations.filter(({ renderedHash }) => renderedHash !== managed.renderedHash);
+  if (changed.length === 0) {
+    throw intentError('no_untracked_change', 'The installed Rendering still matches managed state.');
+  }
+  if (declineOwnership) {
+    return { recovered: false, reason: 'ownership_declined', identity: managed.identity };
+  }
+  const scoped = await readScopedIntents({ repositoryRoot, managed, environment });
+  const assessed = await assessCandidate({
+    source: managed.identity.source,
+    skill,
+    currentRuntime,
+    scope: 'project',
+    repositoryRoot,
+    operationType: 'archaeology',
+    operationDetails: {
+      identity: managed.identity,
+      intents: scoped.project.intents,
+      suppressedGlobalIntentIds: scoped.project.suppressedGlobalIntentIds,
+      effectiveIntents: scoped.effectiveIntents,
+      intentScope: 'project',
+      intentStateScopeRoot: scoped.project.scopeRoot,
+      intentStateRelativePath: scoped.project.relativePath,
+      intentScopes: intentScopesForOperation(scoped),
+      intentBaselines: scoped.baselines,
+      baselineManagedState: managed,
+      baselineIntentStateHash: scoped.project.stateHash,
+      untrackedRenderedHash: changed[0].renderedHash,
+      untrackedRenderedHashes: observations.map(({ target, renderedHash }) => ({
+        target,
+        renderedHash,
+      })),
+      untrackedRenderingSnapshot: observations[0].snapshot,
+      untrackedRenderingSnapshots: observations.map(({ snapshot }) => snapshot),
+    },
+    environment,
+  });
+  const untrackedDirectory = join(assessed.workDir, 'untracked-renderings');
+  await mkdir(untrackedDirectory, { recursive: true });
+  const untrackedRenderings = [];
+  for (const [index, observation] of changed.entries()) {
+    const root = join(untrackedDirectory, String(index));
+    await cp(observation.root, root, {
+      recursive: true,
+      errorOnExist: true,
+      verbatimSymlinks: true,
+    });
+    const snapshot = await createCandidateSnapshot(root);
+    if (JSON.stringify(snapshot) !== JSON.stringify(observation.snapshot)) {
+      await rm(assessed.workDir, { recursive: true, force: true });
+      throw intentConflict({
+        reason: 'operation_baseline_changed',
+        choices: ['restart', 'cancel'],
+      });
+    }
+    untrackedRenderings.push({ target: observation.target, root, snapshot });
+  }
+  const { manifest } = await loadManifest(assessed.workDir);
+  const latestUpstreamSnapshot = await createCandidateSnapshot(manifest.candidateRoot);
+  const operation = {
+    ...manifest.operation,
+    untrackedRoot: untrackedRenderings[0].root,
+    copiedUntrackedSnapshot: untrackedRenderings[0].snapshot,
+    untrackedRenderings,
+    latestUpstreamSnapshot,
+  };
+  await saveManifest(assessed.workDir, { ...manifest, operation });
+  return {
+    ...assessed,
+    operation,
+    untrackedRendering: { root: untrackedRenderings[0].root },
+    untrackedRenderings: untrackedRenderings.map(({ target, root }) => ({ target, root })),
+  };
+}
+
+async function assertArchaeologySources(manifest) {
+  const renderings = manifest.operation.untrackedRenderings || [
+    {
+      root: manifest.operation.untrackedRoot,
+      snapshot: manifest.operation.copiedUntrackedSnapshot,
+    },
+  ];
+  const [untracked, upstream] = await Promise.all([
+    Promise.all(renderings.map(({ root }) => createCandidateSnapshot(root))),
+    createCandidateSnapshot(manifest.candidateRoot),
+  ]);
+  if (
+    JSON.stringify(untracked) !== JSON.stringify(renderings.map(({ snapshot }) => snapshot)) ||
+    JSON.stringify(upstream) !== JSON.stringify(manifest.operation.latestUpstreamSnapshot)
+  ) {
+    throw intentError(
+      'validation_failed',
+      'An Archaeology comparison root changed before Intent confirmation.',
+    );
+  }
+}
+
+export async function prepareArchaeologyAttempt({ workDir }) {
+  const { manifest, resolvedWorkDir } = await loadManifest(workDir);
+  if (manifest.phase !== 'assessed' || manifest.operation.type !== 'archaeology') {
+    throw intentError('invalid_continuation', 'This attempt is not ready for Archaeology.');
+  }
+  return {
+    envelopeStatus: 'ready',
+    workDir: resolvedWorkDir,
+    operation: manifest.operation,
+    candidate: { root: manifest.candidateRoot },
+    untrackedRendering: { root: manifest.operation.untrackedRoot },
+    untrackedRenderings: (manifest.operation.untrackedRenderings || [
+      { root: manifest.operation.untrackedRoot },
+    ]).map(({ target, root }) => ({ target, root })),
+    nextAction: 'archaeology_work_order',
+  };
+}
+
+export async function createArchaeologyWorkOrder({ workDir }) {
+  const { manifest, resolvedWorkDir } = await loadManifest(workDir);
+  if (manifest.phase !== 'assessed' || manifest.operation.type !== 'archaeology') {
+    throw intentError('invalid_continuation', 'This attempt is not ready for an Archaeology work order.');
+  }
+  await assertArchaeologySources(manifest);
+  await currentManagedForOperation(manifest);
+  await assertCurrentIntentBaseline(manifest, manifest.operation.baselineManagedState);
+  await saveManifest(resolvedWorkDir, { ...manifest, phase: 'awaiting_archaeology_result' });
+  return {
+    workDir: resolvedWorkDir,
+    task: 'derive_candidate_intents',
+    untrackedRendering: { root: manifest.operation.untrackedRoot },
+    untrackedRenderings: (manifest.operation.untrackedRenderings || [
+      { root: manifest.operation.untrackedRoot },
+    ]).map(({ target, root }) => ({ target, root })),
+    latestUpstream: { root: manifest.candidateRoot },
+    constraints: {
+      output: 'concise_semantic_outcomes',
+      doNotEditEitherRoot: true,
+      doNotPreserveBytes: true,
+    },
+    proposalStatuses: ['candidate', 'uncertain', 'contradictory'],
+  };
+}
+
+export async function recordArchaeologyResult({ workDir, proposals }) {
+  const { manifest, resolvedWorkDir } = await loadManifest(workDir);
+  if (manifest.phase !== 'awaiting_archaeology_result' || manifest.operation.type !== 'archaeology') {
+    throw intentError('invalid_continuation', 'This attempt is not awaiting Archaeology outcomes.');
+  }
+  await assertArchaeologySources(manifest);
+  let entries;
+  try {
+    entries = JSON.parse(proposals);
+  } catch {
+    throw intentError('invalid_archaeology_result', 'Archaeology proposals must be a JSON array.');
+  }
+  if (
+    !Array.isArray(entries) ||
+    entries.length === 0 ||
+    new Set(entries.map(({ id }) => id)).size !== entries.length ||
+    !entries.every(
+      (entry) =>
+        typeof entry?.id === 'string' &&
+        /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,99}$/.test(entry.id) &&
+        typeof entry.text === 'string' &&
+        entry.text.trim().length > 0 &&
+        entry.text.trim().length <= 500 &&
+        !/[\r\n]/.test(entry.text) &&
+        ['candidate', 'uncertain', 'contradictory'].includes(entry.status) &&
+        (entry.summary === undefined ||
+          (typeof entry.summary === 'string' && entry.summary.trim().length <= 1000)),
+    )
+  ) {
+    throw intentError('invalid_archaeology_result', 'Archaeology proposals have an invalid schema.');
+  }
+  await assertArchaeologySources(manifest);
+  const normalized = entries.map((entry) => ({
+    id: entry.id,
+    text: entry.text.trim(),
+    status: entry.status,
+    ...(entry.summary?.trim() ? { summary: entry.summary.trim() } : {}),
+  }));
+  const unresolved = normalized.filter(({ status }) => status !== 'candidate');
+  if (unresolved.length > 0) {
+    await saveManifest(resolvedWorkDir, {
+      ...manifest,
+      archaeologyProposals: normalized,
+    });
+    throw intentConflict({
+      reason: 'archaeology_uncertain_outcomes',
+      proposals: unresolved,
+      choices: ['revise_proposals', 'abort'],
+    });
+  }
+  await saveManifest(resolvedWorkDir, {
+    ...manifest,
+    phase: 'awaiting_archaeology_approval',
+    archaeologyProposals: normalized,
+  });
+  return { envelopeStatus: 'needs_confirmation', proposals: normalized };
+}
+
+export async function approveArchaeologyIntents({ workDir, approvedIds }) {
+  const { manifest, resolvedWorkDir } = await loadManifest(workDir);
+  if (
+    manifest.phase !== 'awaiting_archaeology_approval' ||
+    manifest.operation.type !== 'archaeology'
+  ) {
+    throw intentError('invalid_continuation', 'This attempt is not awaiting Intent confirmation.');
+  }
+  await assertArchaeologySources(manifest);
+  await currentManagedForOperation(manifest);
+  await assertCurrentIntentBaseline(manifest, manifest.operation.baselineManagedState);
+  let ids;
+  try {
+    ids = JSON.parse(approvedIds);
+  } catch {
+    throw intentError('invalid_archaeology_approval', 'Approved ids must be a JSON array.');
+  }
+  const proposals = manifest.archaeologyProposals;
+  const proposalIds = new Set(proposals.map(({ id }) => id));
+  if (
+    !Array.isArray(ids) ||
+    ids.length === 0 ||
+    new Set(ids).size !== ids.length ||
+    !ids.every((id) => typeof id === 'string' && proposalIds.has(id))
+  ) {
+    throw intentError(
+      'invalid_archaeology_approval',
+      'Approve at least one proposed Intent id, with no unknown or duplicate ids.',
+    );
+  }
+  const existingIds = new Set(manifest.operation.intents.map(({ id }) => id));
+  if (ids.some((id) => existingIds.has(id))) {
+    throw intentConflict({
+      reason: 'archaeology_intent_identity_collision',
+      choices: ['revise_proposals', 'abort'],
+    });
+  }
+  const approvedSet = new Set(ids);
+  const approved = proposals
+    .filter(({ id }) => approvedSet.has(id))
+    .map(({ id, text }) => ({ id, text, state: 'active' }));
+  const projectIntents = [...manifest.operation.intents, ...approved];
+  const scopes = structuredClone(manifest.operation.intentScopes);
+  scopes.project.intents = projectIntents;
+  const effectiveIntents = effectiveIntentsFor(scopes.project, scopes.global);
+  const resumed = {
+    ...manifest,
+    phase: 'assessed',
+    operation: {
+      ...manifest.operation,
+      intents: projectIntents,
+      effectiveIntents,
+      intentScopes: scopes,
+      archaeologyApproval: {
+        approvedIds: ids,
+        declinedIds: proposals.filter(({ id }) => !approvedSet.has(id)).map(({ id }) => id),
+      },
+    },
+  };
+  await saveManifest(resolvedWorkDir, resumed);
+  const order = await createIntentWorkOrder({ workDir: resolvedWorkDir });
+  return {
+    envelopeStatus: 'work_order',
+    approved,
+    declinedIds: resumed.operation.archaeologyApproval.declinedIds,
+    ...order,
+  };
 }
 
 export async function listIntents({ repositoryRoot, skill, environment }) {

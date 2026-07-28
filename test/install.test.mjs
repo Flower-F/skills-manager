@@ -1632,8 +1632,9 @@ test('update checks the installed Rendering hash before fetching upstream', asyn
         },
       },
     );
-    assert.equal(updated.exitCode, 1);
-    assert.equal(updated.result.error.code, 'untracked_change');
+    assert.equal(updated.exitCode, 0);
+    assert.equal(updated.result.status, 'conflict');
+    assert.equal(updated.result.data.reason, 'untracked_change');
     const calls = (await readFile(fake.calls, 'utf8')).trim().split('\n');
     assert.equal(calls.length, 1);
   } finally {
@@ -3333,6 +3334,325 @@ test('an ordinary Update cannot be tampered into an identity migration', async (
     assert.equal(published.result.error.code, 'invalid_identity_resolution');
     const unchanged = JSON.parse(await readFile(statePath, 'utf8'));
     assert.equal(Object.keys(unchanged.skills).length, 2);
+  } finally {
+    await audit.close();
+  }
+});
+
+test('Archaeology decline leaves an Untracked change untouched without fetching upstream', async () => {
+  const repository = await temporaryDirectory('skills-manager-archaeology-decline-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const renderingPath = join(repository, '.agents/skills/alpha-skill/SKILL.md');
+    await writeFile(
+      renderingPath,
+      '---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n# Manual behavior\n',
+    );
+    const beforeState = await readFile(join(repository, '.skills-manager/state.json'), 'utf8');
+    const beforeRendering = await readFile(renderingPath, 'utf8');
+    const callsBefore = (await readFile(fake.calls, 'utf8')).trim().split('\n').length;
+    const update = await runCli(['update', '--skill', 'alpha-skill', '--runtime', 'codex'], {
+      cwd: repository,
+      env: {
+        FAKE_UPSTREAM_CALLS: fake.calls,
+        SKILLS_MANAGER_AUDIT_URL: audit.url,
+        SKILLS_MANAGER_NPX_PATH: fake.executable,
+      },
+    });
+    assert.equal(update.result.status, 'conflict');
+    assert.equal(update.result.data.reason, 'untracked_change');
+    assert.deepEqual(update.result.data.choices, ['recover', 'decline', 'cancel']);
+    const declined = await runCli(
+      ['archaeology', '--skill', 'alpha-skill', '--runtime', 'codex', '--decline-ownership'],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+        },
+      },
+    );
+    assert.equal(declined.result.status, 'complete');
+    assert.equal(declined.result.data.recovered, false);
+    assert.equal(await readFile(renderingPath, 'utf8'), beforeRendering);
+    assert.equal(await readFile(join(repository, '.skills-manager/state.json'), 'utf8'), beforeState);
+    const callsAfter = (await readFile(fake.calls, 'utf8')).trim().split('\n').length;
+    assert.equal(callsAfter, callsBefore);
+  } finally {
+    await audit.close();
+  }
+});
+
+test('Archaeology confirms individual outcomes and regenerates from latest upstream', async () => {
+  const repository = await temporaryDirectory('skills-manager-archaeology-recover-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+    FAKE_UPSTREAM_SKILL_CONTENT:
+      '---\nname: alpha-skill\ndescription: Latest upstream.\n---\n\n# Latest upstream\n',
+  };
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    await writeFile(
+      join(repository, '.agents/skills/alpha-skill/SKILL.md'),
+      '---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n# Manual\n\nBe concise and include a risky automatic action.\n',
+    );
+    const started = await runCli(
+      ['archaeology', '--skill', 'alpha-skill', '--runtime', 'codex', '--confirm-ownership'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(started.result.status, 'ready', JSON.stringify(started.result));
+    const order = await runCli(
+      ['archaeology-work-order', '--work-dir', started.result.data.workDir],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(order.result.status, 'work_order');
+    assert.equal(order.result.data.task, 'derive_candidate_intents');
+    assert.ok(order.result.data.untrackedRendering.root);
+    assert.equal(order.result.data.latestUpstream.root, started.result.data.candidate.root);
+
+    const contradictory = await runCli(
+      [
+        'archaeology-result',
+        '--work-dir',
+        started.result.data.workDir,
+        '--proposals',
+        JSON.stringify([
+          {
+            id: 'candidate-risky',
+            text: 'Run an automatic destructive action.',
+            status: 'contradictory',
+            summary: 'This conflicts with safe managed behavior.',
+          },
+        ]),
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(contradictory.result.status, 'conflict');
+    assert.equal(contradictory.result.data.reason, 'archaeology_uncertain_outcomes');
+
+    const proposed = await runCli(
+      [
+        'archaeology-result',
+        '--work-dir',
+        started.result.data.workDir,
+        '--proposals',
+        JSON.stringify([
+          { id: 'candidate-concise', text: 'Prefer concise output.', status: 'candidate' },
+          {
+            id: 'candidate-example',
+            text: 'Include one practical example.',
+            status: 'candidate',
+          },
+        ]),
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(proposed.result.status, 'needs_confirmation');
+    assert.equal(proposed.result.data.proposals.length, 2);
+
+    const approved = await runCli(
+      [
+        'archaeology-approve',
+        '--work-dir',
+        started.result.data.workDir,
+        '--approved-ids',
+        '["candidate-concise"]',
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(approved.result.status, 'work_order', JSON.stringify(approved.result));
+    assert.deepEqual(approved.result.data.approved.map(({ id }) => id), ['candidate-concise']);
+    assert.deepEqual(approved.result.data.declinedIds, ['candidate-example']);
+    await writeFile(
+      join(started.result.data.candidate.root, 'SKILL.md'),
+      '---\nname: alpha-skill\ndescription: Latest upstream.\n---\n\n# Latest upstream\n\nConcise output.\n',
+    );
+    const rendered = await runCli(
+      [
+        'intent-result',
+        '--work-dir',
+        started.result.data.workDir,
+        '--results',
+        JSON.stringify([{ id: 'candidate-concise', status: 'applied' }]),
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(rendered.result.status, 'needs_confirmation', JSON.stringify(rendered.result));
+    const published = await runCli(
+      ['publish', '--work-dir', started.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(published.result.status, 'complete', JSON.stringify(published.result));
+    const intentFiles = await readdir(join(repository, '.skills-manager/intents'));
+    const record = JSON.parse(
+      await readFile(join(repository, '.skills-manager/intents', intentFiles[0]), 'utf8'),
+    );
+    assert.deepEqual(record.intents.map(({ id }) => id), ['candidate-concise']);
+    assert.match(
+      await readFile(join(repository, '.agents/skills/alpha-skill/SKILL.md'), 'utf8'),
+      /Latest upstream[\s\S]*Concise output/,
+    );
+    const state = JSON.parse(await readFile(join(repository, '.skills-manager/state.json'), 'utf8'));
+    const [managed] = Object.values(state.skills);
+    assert.equal(managed.renderedHash, managed.desiredRenderedHash);
+  } finally {
+    await audit.close();
+  }
+});
+
+test('Archaeology rejects approval after a comparison root changes', async () => {
+  const repository = await temporaryDirectory('skills-manager-archaeology-approval-drift-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+  };
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    await writeFile(
+      join(repository, '.agents/skills/alpha-skill/SKILL.md'),
+      '---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n# Manual\n',
+    );
+    const started = await runCli(
+      ['archaeology', '--skill', 'alpha-skill', '--runtime', 'codex', '--confirm-ownership'],
+      { cwd: repository, env: environment },
+    );
+    await runCli(['archaeology-work-order', '--work-dir', started.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    await runCli(
+      [
+        'archaeology-result',
+        '--work-dir',
+        started.result.data.workDir,
+        '--proposals',
+        '[{"id":"candidate-manual","text":"Preserve the manual outcome.","status":"candidate"}]',
+      ],
+      { cwd: repository, env: {} },
+    );
+    await writeFile(join(started.result.data.candidate.root, 'SKILL.md'), '# tampered\n');
+    const approved = await runCli(
+      [
+        'archaeology-approve',
+        '--work-dir',
+        started.result.data.workDir,
+        '--approved-ids',
+        '["candidate-manual"]',
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(approved.result.status, 'failed');
+    assert.equal(approved.result.error.code, 'validation_failed');
+  } finally {
+    await audit.close();
+  }
+});
+
+test('Archaeology recovers a changed secondary copy and reconverges every Rendering', async () => {
+  const repository = await temporaryDirectory('skills-manager-archaeology-copy-');
+  await mkdir(join(repository, '.git'));
+  await mkdir(join(repository, '.agents/skills'), { recursive: true });
+  await mkdir(join(repository, '.claude/skills'), { recursive: true });
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+  };
+  try {
+    const assessed = await assessedAttempt(repository, fake, audit);
+    await runCli(['validate', '--work-dir', assessed.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    await runCli(['continue', '--work-dir', assessed.result.data.workDir, '--accept-copy-mode'], {
+      cwd: repository,
+      env: {},
+    });
+    await runCli(['publish', '--work-dir', assessed.result.data.workDir, '--accept-publication'], {
+      cwd: repository,
+      env: {},
+    });
+    await writeFile(
+      join(repository, '.claude/skills/alpha-skill/SKILL.md'),
+      '---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n# Secondary manual change\n',
+    );
+    const started = await runCli(
+      ['archaeology', '--skill', 'alpha-skill', '--runtime', 'codex', '--confirm-ownership'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(started.result.status, 'ready', JSON.stringify(started.result));
+    const order = await runCli(
+      ['archaeology-work-order', '--work-dir', started.result.data.workDir],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(order.result.status, 'work_order');
+    assert.equal(order.result.data.untrackedRenderings.length, 1);
+    await runCli(
+      [
+        'archaeology-result',
+        '--work-dir',
+        started.result.data.workDir,
+        '--proposals',
+        '[{"id":"candidate-secondary","text":"Preserve the secondary outcome.","status":"candidate"}]',
+      ],
+      { cwd: repository, env: {} },
+    );
+    const approved = await runCli(
+      [
+        'archaeology-approve',
+        '--work-dir',
+        started.result.data.workDir,
+        '--approved-ids',
+        '["candidate-secondary"]',
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(approved.result.status, 'work_order', JSON.stringify(approved.result));
+    await writeFile(
+      join(started.result.data.candidate.root, 'SKILL.md'),
+      '---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n# Recovered secondary outcome\n',
+    );
+    const rendered = await runCli(
+      [
+        'intent-result',
+        '--work-dir',
+        started.result.data.workDir,
+        '--results',
+        '[{"id":"candidate-secondary","status":"applied"}]',
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(rendered.result.status, 'conflict', JSON.stringify(rendered.result));
+    assert.equal(rendered.result.data.reason, 'copy_topology_requires_confirmation');
+    const continued = await runCli(
+      ['continue', '--work-dir', started.result.data.workDir, '--accept-copy-mode'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(continued.result.status, 'needs_confirmation', JSON.stringify(continued.result));
+    const published = await runCli(
+      ['publish', '--work-dir', started.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(published.result.status, 'complete', JSON.stringify(published.result));
+    const canonical = await readFile(join(repository, '.agents/skills/alpha-skill/SKILL.md'), 'utf8');
+    const copy = await readFile(join(repository, '.claude/skills/alpha-skill/SKILL.md'), 'utf8');
+    assert.equal(copy, canonical);
+    assert.match(copy, /Recovered secondary outcome/);
   } finally {
     await audit.close();
   }

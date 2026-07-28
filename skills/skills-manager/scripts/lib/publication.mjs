@@ -138,11 +138,11 @@ function hashEntries(entries, includeSymlinks) {
   return hash.digest('hex');
 }
 
-async function renderedHashForRoot(root) {
+export async function renderedHashForRoot(root) {
   return hashEntries(await enumerateTree(root), true);
 }
 
-export async function verifyManagedRendering({ repositoryRoot, managed }) {
+export async function locateManagedRendering({ repositoryRoot, managed, expectedHash = null }) {
   const resolvedRepositoryRoot = await realpath(repositoryRoot);
   const targets = [];
   const seen = new Set();
@@ -158,7 +158,7 @@ export async function verifyManagedRendering({ repositoryRoot, managed }) {
     }
     if (seen.has(resolvedTarget)) continue;
     seen.add(resolvedTarget);
-    if ((await renderedHashForRoot(resolvedTarget)) !== managed.renderedHash) {
+    if (expectedHash && (await renderedHashForRoot(resolvedTarget)) !== expectedHash) {
       throw managedError('untracked_change', 'A managed Rendering does not match managed state.');
     }
     targets.push(resolvedTarget);
@@ -167,6 +167,10 @@ export async function verifyManagedRendering({ repositoryRoot, managed }) {
     throw managedError('untracked_change', 'The managed Skill has no readable Rendering target.');
   }
   return targets;
+}
+
+export async function verifyManagedRendering({ repositoryRoot, managed }) {
+  return locateManagedRendering({ repositoryRoot, managed, expectedHash: managed.renderedHash });
 }
 
 export async function createCandidateSnapshot(root) {
@@ -830,7 +834,14 @@ export async function publishAttempt({ workDir }) {
       if (!info?.isDirectory() || info.isSymbolicLink()) {
         throw managedError('untracked_change', 'A managed Rendering target is missing or no longer a real directory.');
       }
-      if ((await renderedHashForRoot(target)) !== existingManagedSkill.renderedHash) {
+      const archaeologyHash = manifest.operation.untrackedRenderedHashes?.find(
+        ({ target: storedTarget }) => storedTarget === relativeTargets[targets.indexOf(target)],
+      )?.renderedHash;
+      const expectedCurrentHash =
+        manifest.operation.type === 'archaeology'
+          ? archaeologyHash || manifest.operation.untrackedRenderedHash
+          : existingManagedSkill.renderedHash;
+      if ((await renderedHashForRoot(target)) !== expectedCurrentHash) {
         throw managedError('untracked_change', 'A managed Rendering changed after the Intent review began.');
       }
     }

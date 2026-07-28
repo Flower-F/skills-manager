@@ -150,6 +150,35 @@ node <skill-directory>/scripts/skills-manager.mjs continue --work-dir <work-dire
 
 Only the returned `work_order` authorizes another candidate edit. Return the revised result as `adapted`, review both diffs, and publish normally. Until publication is `complete`, the old customized Rendering remains active.
 
+## Recover an Untracked change through Archaeology
+
+When `update` returns `conflict` with `untracked_change`, explain that installed bytes differ from managed state and have no recorded semantic Intent. Ask whether the user authored the change intentionally. If they decline ownership, record that decision without fetching or changing anything:
+
+```sh
+node <skill-directory>/scripts/skills-manager.mjs archaeology --skill <installed-skill> --runtime <runtime-id> --decline-ownership
+```
+
+If they confirm ownership, start Archaeology against latest upstream:
+
+```sh
+node <skill-directory>/scripts/skills-manager.mjs archaeology --skill <installed-skill> --runtime <runtime-id> --confirm-ownership
+node <skill-directory>/scripts/skills-manager.mjs archaeology-work-order --work-dir <work-directory>
+```
+
+Compare every returned read-only entry in `untrackedRenderings` with `latestUpstream.root`; `untrackedRendering.root` is the first entry for single-Rendering compatibility. Copy topologies may expose more than one independently changed Rendering. Do not edit any comparison root during discovery. Derive concise semantic outcomes rather than patches or copied bytes, then report each proposal independently:
+
+```sh
+node <skill-directory>/scripts/skills-manager.mjs archaeology-result --work-dir <work-directory> --proposals '[{"id":"candidate-1","text":"<semantic-outcome>","status":"candidate"}]'
+```
+
+Use `uncertain` or `contradictory` with a concise summary whenever interpretation is not safe; the resulting conflict must be revised or aborted, never auto-approved. Present every `candidate` to the user. After they explicitly approve an individual subset, record exactly those ids:
+
+```sh
+node <skill-directory>/scripts/skills-manager.mjs archaeology-approve --work-dir <work-directory> --approved-ids '["candidate-1"]'
+```
+
+Apply the returned Effective-Intent work order to the latest upstream candidate, return per-Intent results, review the regenerated total/material diffs, and publish normally. The current Untracked Rendering and managed state remain untouched until publication completes.
+
 If an Intent is reported `obsolete`, do not expire it implicitly. Explain the per-Intent evidence. When the user chooses to keep it active because upstream currently satisfies it, record that choice and return the same candidate with `applied` status:
 
 ```sh

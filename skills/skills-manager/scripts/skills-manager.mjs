@@ -7,42 +7,68 @@ import { fileURLToPath } from 'node:url';
 // Keep the CLI protocol stable independently from the Skill package name.
 const ENVELOPE_VERSION = 1;
 const MINIMUM_NODE_MAJOR = 22;
-const INTENT_MUTATION_OPTIONS = {
-  'intent-delete': new Set(['--confirm-delete', '--intent-id', '--runtime', '--scope', '--skill']),
-  'intent-disable': new Set(['--intent-id', '--runtime', '--scope', '--skill']),
-  'intent-edit': new Set(['--intent', '--intent-id', '--runtime', '--scope', '--skill']),
-  'intent-enable': new Set(['--intent-id', '--runtime', '--scope', '--skill']),
-  'intent-obsolete': new Set(['--intent-id', '--reason', '--runtime', '--scope', '--skill']),
+const BOOLEAN_OPTIONS = new Set([
+  '--accept-change-scope',
+  '--accept-copy-mode',
+  '--accept-publication',
+  '--accept-risk',
+  '--accept-semantic-revision',
+  '--confirm-delete',
+  '--confirm-ownership',
+  '--decline-ownership',
+  '--keep-obsolete-intents',
+  '--mark-obsolete-intents',
+]);
+const command = (options, runtimeRequired = true) => ({ options: new Set(options), runtimeRequired });
+const COMMANDS = {
+  abort: command(['--work-dir'], false),
+  archaeology: command(['--confirm-ownership', '--decline-ownership', '--runtime', '--skill']),
+  'archaeology-approve': command(['--approved-ids', '--work-dir'], false),
+  'archaeology-result': command(['--proposals', '--work-dir'], false),
+  'archaeology-work-order': command(['--work-dir'], false),
+  assess: command(['--runtime', '--scope', '--source', '--skill']),
+  continue: command(
+    [
+      '--accept-change-scope',
+      '--accept-copy-mode',
+      '--accept-risk',
+      '--accept-semantic-revision',
+      '--keep-obsolete-intents',
+      '--mark-obsolete-intents',
+      '--work-dir',
+    ],
+    false,
+  ),
+  discover: command(['--runtime', '--source']),
+  inspect: command(['--runtime', '--scope']),
+  'identity-resolve': command(
+    ['--choice', '--runtime', '--skill', '--source', '--upstream-skill'],
+    false,
+  ),
+  'intent-add': command(['--intent', '--runtime', '--scope', '--skill']),
+  'intent-delete': command(['--confirm-delete', '--intent-id', '--runtime', '--scope', '--skill']),
+  'intent-disable': command(['--intent-id', '--runtime', '--scope', '--skill']),
+  'intent-edit': command(['--intent', '--intent-id', '--runtime', '--scope', '--skill']),
+  'intent-enable': command(['--intent-id', '--runtime', '--scope', '--skill']),
+  'intent-list': command(['--skill'], false),
+  'intent-obsolete': command(['--intent-id', '--reason', '--runtime', '--scope', '--skill']),
+  'intent-result': command(['--result', '--results', '--summary', '--work-dir'], false),
+  'intent-suppress': command(['--intent-id', '--runtime', '--skill']),
+  publish: command(['--accept-publication', '--work-dir'], false),
+  update: command(['--runtime', '--skill']),
+  validate: command(['--work-dir'], false),
+  'work-order': command(['--work-dir'], false),
 };
-const INTENT_MUTATION_COMMANDS = Object.keys(INTENT_MUTATION_OPTIONS);
+const INTENT_MUTATION_COMMANDS = [
+  'intent-delete',
+  'intent-disable',
+  'intent-edit',
+  'intent-enable',
+  'intent-obsolete',
+];
 const INTENT_MUTATION_OPERATION_TYPES = INTENT_MUTATION_COMMANDS.map((command) =>
   command.replace('-', '_'),
 );
-const COMMAND_OPTIONS = {
-  abort: new Set(['--work-dir']),
-  assess: new Set(['--runtime', '--scope', '--source', '--skill']),
-  continue: new Set([
-    '--accept-change-scope',
-    '--accept-copy-mode',
-    '--accept-risk',
-    '--accept-semantic-revision',
-    '--keep-obsolete-intents',
-    '--mark-obsolete-intents',
-    '--work-dir',
-  ]),
-  discover: new Set(['--runtime', '--source']),
-  inspect: new Set(['--runtime', '--scope']),
-  'identity-resolve': new Set(['--choice', '--runtime', '--skill', '--source', '--upstream-skill']),
-  'intent-add': new Set(['--intent', '--runtime', '--scope', '--skill']),
-  'intent-list': new Set(['--skill']),
-  'intent-suppress': new Set(['--intent-id', '--runtime', '--skill']),
-  'intent-result': new Set(['--result', '--results', '--summary', '--work-dir']),
-  publish: new Set(['--accept-publication', '--work-dir']),
-  update: new Set(['--runtime', '--skill']),
-  validate: new Set(['--work-dir']),
-  'work-order': new Set(['--work-dir']),
-  ...INTENT_MUTATION_OPTIONS,
-};
 
 function writeEnvelope(envelope, exitCode = 0) {
   process.stdout.write(`${JSON.stringify({ version: ENVELOPE_VERSION, ...envelope })}\n`);
@@ -56,17 +82,7 @@ function fail(command, code, message) {
 function parseArguments(arguments_) {
   const [command, ...tokens] = arguments_;
   const options = { scope: 'project' };
-  const flags = new Set([
-    '--accept-change-scope',
-    '--accept-copy-mode',
-    '--accept-publication',
-    '--accept-risk',
-    '--accept-semantic-revision',
-    '--confirm-delete',
-    '--keep-obsolete-intents',
-    '--mark-obsolete-intents',
-  ]);
-  const allowedOptions = COMMAND_OPTIONS[command];
+  const allowedOptions = COMMANDS[command]?.options;
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
     if (!allowedOptions?.has(token)) {
@@ -74,7 +90,7 @@ function parseArguments(arguments_) {
       error.code = 'invalid_arguments';
       throw error;
     }
-    if (flags.has(token)) {
+    if (BOOLEAN_OPTIONS.has(token)) {
       options[token.slice(2)] = true;
       continue;
     }
@@ -124,44 +140,12 @@ async function main() {
   let parsed;
   try {
     parsed = parseArguments(process.argv.slice(2));
-    if (
-      ![
-        'inspect',
-        'identity-resolve',
-        'discover',
-        'assess',
-        'intent-add',
-        'intent-list',
-        'intent-suppress',
-        ...INTENT_MUTATION_COMMANDS,
-        'work-order',
-        'intent-result',
-        'continue',
-        'abort',
-        'validate',
-        'publish',
-        'update',
-      ].includes(parsed.command)
-    ) {
+    if (!COMMANDS[parsed.command]) {
       const error = new Error(parsed.command ? `Unknown command: ${parsed.command}` : 'A command is required.');
       error.code = 'invalid_command';
       throw error;
     }
-    if (
-      ![
-        'continue',
-        'abort',
-        'validate',
-        'publish',
-        'work-order',
-        'intent-result',
-        'intent-list',
-        'identity-resolve',
-      ].includes(
-        parsed.command,
-      ) &&
-      !parsed.options.runtime
-    ) {
+    if (COMMANDS[parsed.command].runtimeRequired && !parsed.options.runtime) {
       const error = new Error(`${parsed.command} requires --runtime <agent-id>.`);
       error.code = 'missing_runtime';
       throw error;
@@ -172,7 +156,66 @@ async function main() {
       throw error;
     }
 
-    if (parsed.command === 'identity-resolve') {
+    if (parsed.command === 'archaeology') {
+      if (!parsed.options.skill) {
+        const error = new Error('archaeology requires --skill <skill-id>.');
+        error.code = 'invalid_arguments';
+        throw error;
+      }
+      const { beginArchaeology } = await import('./lib/intents.mjs');
+      const data = await beginArchaeology({
+        repositoryRoot: await findRepositoryRoot(process.cwd()),
+        skill: parsed.options.skill,
+        confirmOwnership: parsed.options['confirm-ownership'] === true,
+        declineOwnership: parsed.options['decline-ownership'] === true,
+        currentRuntime: parsed.options.runtime,
+        environment: process.env,
+      });
+      const {
+        envelopeStatus = data.workDir
+          ? data.security?.decision === 'approved'
+            ? 'ready'
+            : 'needs_confirmation'
+          : 'complete',
+        ...result
+      } = data;
+      writeEnvelope({ status: envelopeStatus, command: parsed.command, data: result });
+    } else if (parsed.command === 'archaeology-work-order') {
+      if (!parsed.options['work-dir']) {
+        const error = new Error('archaeology-work-order requires --work-dir <path>.');
+        error.code = 'invalid_arguments';
+        throw error;
+      }
+      const { createArchaeologyWorkOrder } = await import('./lib/intents.mjs');
+      const data = await createArchaeologyWorkOrder({ workDir: parsed.options['work-dir'] });
+      writeEnvelope({ status: 'work_order', command: parsed.command, data });
+    } else if (parsed.command === 'archaeology-result') {
+      if (!parsed.options['work-dir'] || !parsed.options.proposals) {
+        const error = new Error('archaeology-result requires --work-dir and --proposals <json>.');
+        error.code = 'invalid_arguments';
+        throw error;
+      }
+      const { recordArchaeologyResult } = await import('./lib/intents.mjs');
+      const data = await recordArchaeologyResult({
+        workDir: parsed.options['work-dir'],
+        proposals: parsed.options.proposals,
+      });
+      const { envelopeStatus = 'needs_confirmation', ...result } = data;
+      writeEnvelope({ status: envelopeStatus, command: parsed.command, data: result });
+    } else if (parsed.command === 'archaeology-approve') {
+      if (!parsed.options['work-dir'] || !parsed.options['approved-ids']) {
+        const error = new Error('archaeology-approve requires --work-dir and --approved-ids <json>.');
+        error.code = 'invalid_arguments';
+        throw error;
+      }
+      const { approveArchaeologyIntents } = await import('./lib/intents.mjs');
+      const data = await approveArchaeologyIntents({
+        workDir: parsed.options['work-dir'],
+        approvedIds: parsed.options['approved-ids'],
+      });
+      const { envelopeStatus = 'work_order', ...result } = data;
+      writeEnvelope({ status: envelopeStatus, command: parsed.command, data: result });
+    } else if (parsed.command === 'identity-resolve') {
       if (
         !parsed.options.skill ||
         !parsed.options.source ||
@@ -305,7 +348,12 @@ async function main() {
           acceptRisk: parsed.options['accept-risk'] === true,
           acceptCopyMode: parsed.options['accept-copy-mode'] === true,
         });
-        if (
+        if (data.envelopeStatus === 'needs_confirmation') {
+          // Topology confirmation already advanced the reviewed attempt to publication.
+        } else if (data.operation?.type === 'archaeology') {
+          const { prepareArchaeologyAttempt } = await import('./lib/intents.mjs');
+          data = await prepareArchaeologyAttempt({ workDir: parsed.options['work-dir'] });
+        } else if (
           data.operation?.type === 'update' ||
           INTENT_MUTATION_OPERATION_TYPES.includes(data.operation?.type) ||
           ['intent_suppress', 'identity_migrate'].includes(data.operation?.type)
