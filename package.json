@@ -1,0 +1,16 @@
+{
+  "name": "skills-manager",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "skills-manager": "skills/skills-manager/scripts/skills-manager.mjs"
+  },
+  "scripts": {
+    "test": "node --test",
+    "typecheck": "node --check skills/skills-manager/scripts/skills-manager.mjs && node --check skills/skills-manager/scripts/lib/*.mjs && node --check test/*.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

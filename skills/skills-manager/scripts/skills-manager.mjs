@@ -1,0 +1,202 @@
+#!/usr/bin/env node
+
+import { lstat } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+// Keep the CLI protocol stable independently from the Skill package name.
+const ENVELOPE_VERSION = 1;
+const MINIMUM_NODE_MAJOR = 22;
+const COMMAND_OPTIONS = {
+  abort: new Set(['--work-dir']),
+  assess: new Set(['--runtime', '--scope', '--source', '--skill']),
+  continue: new Set(['--accept-copy-mode', '--accept-risk', '--work-dir']),
+  discover: new Set(['--runtime', '--source']),
+  inspect: new Set(['--runtime', '--scope']),
+  publish: new Set(['--accept-publication', '--work-dir']),
+  validate: new Set(['--work-dir']),
+};
+
+function writeEnvelope(envelope, exitCode = 0) {
+  process.stdout.write(`${JSON.stringify({ version: ENVELOPE_VERSION, ...envelope })}\n`);
+  process.exitCode = exitCode;
+}
+
+function fail(command, code, message) {
+  writeEnvelope({ status: 'failed', command, error: { code, message } }, 1);
+}
+
+function parseArguments(arguments_) {
+  const [command, ...tokens] = arguments_;
+  const options = { scope: 'project' };
+  const flags = new Set(['--accept-copy-mode', '--accept-publication', '--accept-risk']);
+  const allowedOptions = COMMAND_OPTIONS[command];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    if (!allowedOptions?.has(token)) {
+      const error = new Error(`Argument ${token} does not apply to ${command || 'an unknown command'}.`);
+      error.code = 'invalid_arguments';
+      throw error;
+    }
+    if (flags.has(token)) {
+      options[token.slice(2)] = true;
+      continue;
+    }
+    const value = tokens[index + 1];
+    if (!value || value.startsWith('--')) {
+      const error = new Error(`Missing value for ${token}`);
+      error.code = 'invalid_arguments';
+      throw error;
+    }
+    options[token.slice(2)] = value;
+    index += 1;
+  }
+  return { command, options };
+}
+
+async function exists(path) {
+  try {
+    await lstat(path);
+    return true;
+  } catch (error) {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return false;
+    throw error;
+  }
+}
+
+async function findRepositoryRoot(start) {
+  let candidate = resolve(start);
+  while (true) {
+    if (await exists(resolve(candidate, '.git'))) return candidate;
+    const parent = dirname(candidate);
+    if (parent === candidate) return resolve(start);
+    candidate = parent;
+  }
+}
+
+async function main() {
+  const nodeMajor = Number.parseInt(process.version.slice(1).split('.')[0], 10);
+  if (!Number.isInteger(nodeMajor) || nodeMajor < MINIMUM_NODE_MAJOR) {
+    fail(
+      process.argv[2] || null,
+      'unsupported_node_version',
+      `skills-manager requires Node 22 or newer; received ${process.version}.`,
+    );
+    return;
+  }
+
+  let parsed;
+  try {
+    parsed = parseArguments(process.argv.slice(2));
+    if (!['inspect', 'discover', 'assess', 'continue', 'abort', 'validate', 'publish'].includes(parsed.command)) {
+      const error = new Error(parsed.command ? `Unknown command: ${parsed.command}` : 'A command is required.');
+      error.code = 'invalid_command';
+      throw error;
+    }
+    if (!['continue', 'abort', 'validate', 'publish'].includes(parsed.command) && !parsed.options.runtime) {
+      const error = new Error(`${parsed.command} requires --runtime <agent-id>.`);
+      error.code = 'missing_runtime';
+      throw error;
+    }
+    if (!['project', 'global'].includes(parsed.options.scope)) {
+      const error = new Error(`Unsupported scope: ${parsed.options.scope}`);
+      error.code = 'unsupported_scope';
+      throw error;
+    }
+
+    if (parsed.command === 'validate') {
+      if (!parsed.options['work-dir']) {
+        const error = new Error('validate requires --work-dir <path>.');
+        error.code = 'invalid_arguments';
+        throw error;
+      }
+      const { validateAttempt } = await import('./lib/publication.mjs');
+      const result = await validateAttempt({ workDir: parsed.options['work-dir'] });
+      const { envelopeStatus = 'needs_confirmation', ...data } = result;
+      writeEnvelope({ status: envelopeStatus, command: 'validate', data });
+    } else if (parsed.command === 'publish') {
+      if (!parsed.options['work-dir'] || parsed.options['accept-publication'] !== true) {
+        const error = new Error('publish requires --work-dir <path> and --accept-publication.');
+        error.code = 'invalid_arguments';
+        throw error;
+      }
+      const { publishAttempt } = await import('./lib/publication.mjs');
+      const data = await publishAttempt({ workDir: parsed.options['work-dir'] });
+      writeEnvelope({ status: 'complete', command: 'publish', data });
+    } else if (parsed.command === 'abort') {
+      if (!parsed.options['work-dir']) {
+        const error = new Error('abort requires --work-dir <path>.');
+        error.code = 'invalid_arguments';
+        throw error;
+      }
+      const { abortAttempt } = await import('./lib/upstream.mjs');
+      const data = await abortAttempt({ workDir: parsed.options['work-dir'] });
+      writeEnvelope({ status: 'complete', command: 'abort', data });
+    } else if (parsed.command === 'continue') {
+      if (!parsed.options['work-dir']) {
+        const error = new Error('continue requires --work-dir <path>.');
+        error.code = 'invalid_arguments';
+        throw error;
+      }
+      const { continueRiskAcceptance } = await import('./lib/upstream.mjs');
+      const data = await continueRiskAcceptance({
+        workDir: parsed.options['work-dir'],
+        acceptRisk: parsed.options['accept-risk'] === true,
+        acceptCopyMode: parsed.options['accept-copy-mode'] === true,
+      });
+      const { envelopeStatus = 'ready', ...result } = data;
+      writeEnvelope({ status: envelopeStatus, command: 'continue', data: result });
+    } else if (parsed.command === 'discover') {
+      if (!parsed.options.source) {
+        const error = new Error('discover requires --source <repository>.');
+        error.code = 'missing_source';
+        throw error;
+      }
+      const { discoverCandidates } = await import('./lib/upstream.mjs');
+      const data = await discoverCandidates({
+        source: parsed.options.source,
+        currentRuntime: parsed.options.runtime,
+        environment: process.env,
+      });
+      writeEnvelope({ status: 'ready', command: 'discover', data });
+    } else if (parsed.command === 'assess') {
+      if (!parsed.options.source || !parsed.options.skill) {
+        const error = new Error('assess requires --source <repository> and --skill <skill-id>.');
+        error.code = 'invalid_arguments';
+        throw error;
+      }
+      const { assessCandidate } = await import('./lib/upstream.mjs');
+      const data = await assessCandidate({
+        source: parsed.options.source,
+        skill: parsed.options.skill,
+        currentRuntime: parsed.options.runtime,
+        scope: parsed.options.scope,
+        repositoryRoot: await findRepositoryRoot(process.cwd()),
+        environment: process.env,
+      });
+      writeEnvelope({
+        status: data.security.decision === 'approved' ? 'ready' : 'needs_confirmation',
+        command: 'assess',
+        data,
+      });
+    } else {
+      const repositoryRoot = await findRepositoryRoot(process.cwd());
+      const { inspectEnvironment } = await import('./lib/inspect.mjs');
+      const data = await inspectEnvironment({
+        repositoryRoot,
+        currentRuntime: parsed.options.runtime,
+        scope: parsed.options.scope,
+        environment: process.env,
+      });
+      writeEnvelope({ status: 'ready', command: 'inspect', data });
+    }
+  } catch (error) {
+    if (error?.status === 'conflict') {
+      writeEnvelope({ status: 'conflict', command: parsed?.command || null, data: error.data });
+    } else {
+      fail(parsed?.command || process.argv[2] || null, error?.code || 'inspection_failed', error.message);
+    }
+  }
+}
+
+await main();
