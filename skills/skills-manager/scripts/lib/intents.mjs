@@ -13,6 +13,18 @@ import {
 } from './publication.mjs';
 import { assessCandidate, loadManifest, saveManifest } from './upstream.mjs';
 
+const INTENT_MUTATION_TYPES = new Set([
+  'intent_edit',
+  'intent_disable',
+  'intent_enable',
+  'intent_delete',
+  'intent_obsolete',
+]);
+
+function isManagedRenderOperation(type) {
+  return type === 'update' || INTENT_MUTATION_TYPES.has(type);
+}
+
 function intentError(code, message) {
   const error = new Error(message);
   error.code = code;
@@ -50,11 +62,19 @@ async function readIntentRecord(repositoryRoot, managed) {
       JSON.stringify(record.identity) !== JSON.stringify(managed.identity) ||
       record.installName !== managed.installName ||
       !Array.isArray(record.intents) ||
+      new Set(record.intents.map(({ id }) => id)).size !== record.intents.length ||
       !record.intents.every(
         (intent) =>
           typeof intent?.id === 'string' &&
           typeof intent.text === 'string' &&
-          ['active', 'disabled', 'expired'].includes(intent.state),
+          intent.text.length > 0 &&
+          intent.text.length <= 500 &&
+          !/[\r\n]/.test(intent.text) &&
+          ['active', 'disabled', 'expired'].includes(intent.state) &&
+          (intent.state !== 'expired' ||
+            (typeof intent.obsoleteReason === 'string' &&
+              intent.obsoleteReason.length > 0 &&
+              intent.obsoleteReason.length <= 1000)),
       )
     ) {
       throw new Error();
@@ -102,6 +122,15 @@ async function assertCurrentIntentBaseline(manifest, managed) {
   }
 }
 
+async function requireManagedSkill(repositoryRoot, skill) {
+  const state = await readManagedState(repositoryRoot);
+  const matches = Object.values(state?.skills || {}).filter((entry) => entry.installName === skill);
+  if (matches.length !== 1) {
+    throw intentError('managed_skill_not_found', `Expected exactly one managed Skill named ${skill}.`);
+  }
+  return matches[0];
+}
+
 export async function beginIntentAdd({
   repositoryRoot,
   skill,
@@ -116,12 +145,7 @@ export async function beginIntentAdd({
       'An Intent must be one concise semantic outcome of at most 500 characters.',
     );
   }
-  const state = await readManagedState(repositoryRoot);
-  const matches = Object.values(state?.skills || {}).filter((entry) => entry.installName === skill);
-  if (matches.length !== 1) {
-    throw intentError('managed_skill_not_found', `Expected exactly one managed Skill named ${skill}.`);
-  }
-  const managed = matches[0];
+  const managed = await requireManagedSkill(repositoryRoot, skill);
   const existingIntentRecord = await readIntentRecord(repositoryRoot, managed);
   const intent = {
     id: `intent-${randomUUID()}`,
@@ -160,12 +184,7 @@ export async function beginUpdate({
   currentRuntime,
   environment,
 }) {
-  const state = await readManagedState(repositoryRoot);
-  const matches = Object.values(state?.skills || {}).filter((entry) => entry.installName === skill);
-  if (matches.length !== 1) {
-    throw intentError('managed_skill_not_found', `Expected exactly one managed Skill named ${skill}.`);
-  }
-  const managed = matches[0];
+  const managed = await requireManagedSkill(repositoryRoot, skill);
   await verifyManagedRendering({ repositoryRoot, managed });
   const intentRecord = await readIntentRecord(repositoryRoot, managed);
   const effectiveIntents = intentRecord.intents.filter(({ state }) => state === 'active');
@@ -191,9 +210,115 @@ export async function beginUpdate({
     : assessed;
 }
 
+export async function listIntents({ repositoryRoot, skill }) {
+  const managed = await requireManagedSkill(repositoryRoot, skill);
+  const record = await readIntentRecord(repositoryRoot, managed);
+  return {
+    identity: managed.identity,
+    installName: managed.installName,
+    scope: managed.scope,
+    intents: record.intents,
+    effectiveIntentIds: record.intents
+      .filter(({ state: intentState }) => intentState === 'active')
+      .map(({ id }) => id),
+    hashes: {
+      upstream: managed.upstreamHash,
+      rendered: managed.renderedHash,
+      desired: managed.desiredRenderedHash,
+      effectiveIntents: managed.effectiveIntentsHash,
+    },
+  };
+}
+
+export async function beginIntentMutation({
+  repositoryRoot,
+  skill,
+  intentId,
+  mutation,
+  text,
+  reason,
+  confirmDelete,
+  currentRuntime,
+  environment,
+}) {
+  const managed = await requireManagedSkill(repositoryRoot, skill);
+  await verifyManagedRendering({ repositoryRoot, managed });
+  const record = await readIntentRecord(repositoryRoot, managed);
+  const index = record.intents.findIndex(({ id }) => id === intentId);
+  if (index < 0) throw intentError('intent_not_found', `Intent ${intentId} is not attached to ${skill}.`);
+  if (mutation === 'delete' && confirmDelete !== true) {
+    const error = new Error('Permanent Intent deletion requires explicit confirmation.');
+    error.status = 'conflict';
+    error.data = {
+      reason: 'permanent_intent_deletion',
+      intent: record.intents[index],
+      choices: ['confirm_delete', 'cancel'],
+    };
+    throw error;
+  }
+  const intents = record.intents.map((intent) => ({ ...intent }));
+  const before = { ...intents[index] };
+  if (mutation === 'edit') {
+    const normalizedText = text?.trim();
+    if (!normalizedText || normalizedText.length > 500 || /[\r\n]/.test(normalizedText)) {
+      throw intentError('invalid_intent', 'Edited Intent text must be one outcome of at most 500 characters.');
+    }
+    intents[index].text = normalizedText;
+  } else if (mutation === 'disable') {
+    if (intents[index].state !== 'active') {
+      throw intentError('invalid_intent_transition', 'Only an active Intent can be disabled.');
+    }
+    intents[index].state = 'disabled';
+  } else if (mutation === 'enable') {
+    if (intents[index].state !== 'disabled') {
+      throw intentError('invalid_intent_transition', 'Only a disabled Intent can be re-enabled.');
+    }
+    intents[index].state = 'active';
+  } else if (mutation === 'obsolete') {
+    const normalizedReason = reason?.trim();
+    if (!normalizedReason || normalizedReason.length > 1000) {
+      throw intentError('invalid_intent_transition', 'Obsolete Intent requires a reason of at most 1000 characters.');
+    }
+    intents[index].state = 'expired';
+    intents[index].obsoleteReason = normalizedReason;
+  } else if (mutation === 'delete') {
+    intents.splice(index, 1);
+  } else {
+    throw intentError('invalid_intent_transition', `Unsupported Intent mutation: ${mutation}`);
+  }
+  const effectiveIntents = intents.filter(({ state: intentState }) => intentState === 'active');
+  const operationType = `intent_${mutation}`;
+  const assessed = await assessCandidate({
+    source: managed.identity.source,
+    skill,
+    currentRuntime,
+    scope: managed.scope,
+    repositoryRoot,
+    operationType,
+    operationDetails: {
+      identity: managed.identity,
+      intents,
+      effectiveIntents,
+      intentStateRelativePath: record.relativePath,
+      baselineManagedState: managed,
+      baselineIntentStateHash: record.stateHash,
+      mutation: {
+        type: mutation,
+        intentId,
+        before,
+        after: mutation === 'delete' ? null : intents.find(({ id }) => id === intentId),
+      },
+    },
+    environment,
+  });
+  return assessed.security.decision === 'approved'
+    ? prepareUpdateAttempt({ workDir: assessed.workDir })
+    : assessed;
+}
+
 export async function prepareUpdateAttempt({ workDir }) {
   const { manifest, resolvedWorkDir } = await loadManifest(workDir);
-  if (manifest.phase !== 'assessed' || manifest.operation.type !== 'update') {
+  if (manifest.phase !== 'assessed' || !isManagedRenderOperation(manifest.operation.type)) {
     throw intentError('invalid_continuation', 'This attempt is not ready to prepare an Update.');
   }
   const { managed, targets } = await currentManagedForOperation(manifest);
@@ -209,6 +334,7 @@ export async function prepareUpdateAttempt({ workDir }) {
     .update(JSON.stringify(manifest.operation.effectiveIntents))
     .digest('hex');
   if (
+    manifest.operation.type === 'update' &&
     baselineValidation.upstreamHash === managed.upstreamHash &&
     effectiveIntentsHash === managed.effectiveIntentsHash &&
     managed.renderedHash === managed.desiredRenderedHash
@@ -244,8 +370,25 @@ export async function prepareUpdateAttempt({ workDir }) {
         .digest('hex'),
     },
     effectiveIntentsHash: createHash('sha256').update('[]').digest('hex'),
+    ...(INTENT_MUTATION_TYPES.has(manifest.operation.type)
+      ? {
+          candidateIntentState: {
+            relativePath: manifest.operation.intentStateRelativePath,
+            record: {
+              version: 1,
+              identity: manifest.operation.identity,
+              installName: manifest.operation.skill,
+              intents: manifest.operation.intents,
+            },
+          },
+        }
+      : {}),
     semanticReview: {
-      semanticOutcome: { result: 'not_required', intents: [] },
+      semanticOutcome: {
+        result: 'not_required',
+        intents: [],
+        ...(manifest.operation.mutation ? { mutation: manifest.operation.mutation } : {}),
+      },
       materialDiff: [],
       totalDiff: diffCandidateSnapshots(currentRenderingSnapshot, baselineSnapshot),
     },
@@ -280,7 +423,7 @@ export async function createIntentWorkOrder({ workDir }) {
   const { manifest, resolvedWorkDir } = await loadManifest(workDir);
   if (
     manifest.phase !== 'assessed' ||
-    !['intent_add', 'update'].includes(manifest.operation.type) ||
+    !['intent_add', 'update', ...INTENT_MUTATION_TYPES].includes(manifest.operation.type) ||
     manifest.operation.effectiveIntents.length === 0
   ) {
     throw intentError('invalid_continuation', 'This Update attempt is not ready for an Intent work order.');
@@ -348,7 +491,7 @@ async function finalizeIntentCandidate({ manifest, resolvedWorkDir, agentResult,
     ...manifest,
     phase: 'assessed',
     agentResult,
-    ...(manifest.operation.type === 'intent_add'
+    ...(manifest.operation.type !== 'update'
       ? { candidateIntentState: { relativePath, record: intentRecord } }
       : {}),
     effectiveIntentsHash,
@@ -364,6 +507,7 @@ async function finalizeIntentCandidate({ manifest, resolvedWorkDir, agentResult,
               intents: agentResult.intents,
               result: agentResult.status,
               summary: agentResult.summary || null,
+              ...(manifest.operation.mutation ? { mutation: manifest.operation.mutation } : {}),
             },
       materialDiff: actualMaterialDiff,
       totalDiff: diffCandidateSnapshots(manifest.currentRenderingSnapshot, currentSnapshot),
@@ -380,7 +524,26 @@ function normalizeAgentResult(manifest, { result, results, summary }) {
     if (summary && summary.trim().length > 1000) {
       throw intentError('invalid_agent_result', 'Intent result summary must be at most 1000 characters.');
     }
-    return { status: result, summary: summary?.trim() || null };
+    if (result === 'obsolete' && !summary?.trim()) {
+      throw intentError('invalid_agent_result', 'An obsolete Intent result requires an explanatory summary.');
+    }
+    const normalizedSummary = summary?.trim() || null;
+    return {
+      status: result,
+      summary: normalizedSummary,
+      ...(['obsolete', 'failed'].includes(result)
+        ? {
+            intents: [
+              {
+                id: manifest.operation.intent.id,
+                text: manifest.operation.intent.text,
+                status: result,
+                summary: normalizedSummary,
+              },
+            ],
+          }
+        : {}),
+    };
   }
   if (summary && summary.trim().length > 1000) {
     throw intentError('invalid_agent_result', 'Intent result summary must be at most 1000 characters.');
@@ -401,7 +564,9 @@ function normalizeAgentResult(manifest, { result, results, summary }) {
         expected.has(entry?.id) &&
         ['applied', 'adapted', 'obsolete', 'failed'].includes(entry.status) &&
         (entry.summary === undefined ||
-          (typeof entry.summary === 'string' && entry.summary.trim().length <= 1000)),
+          (typeof entry.summary === 'string' && entry.summary.trim().length <= 1000)) &&
+        (entry.status !== 'obsolete' ||
+          (typeof entry.summary === 'string' && entry.summary.trim().length > 0)),
     )
   ) {
     throw intentError(
@@ -432,7 +597,7 @@ export async function recordIntentResult({ workDir, result, results, summary }) 
   const { manifest, resolvedWorkDir } = await loadManifest(workDir);
   if (
     manifest.phase !== 'awaiting_agent_result' ||
-    !['intent_add', 'update'].includes(manifest.operation.type)
+    !['intent_add', 'update', ...INTENT_MUTATION_TYPES].includes(manifest.operation.type)
   ) {
     throw intentError('invalid_continuation', 'This Update attempt is not awaiting an Agent Intent result.');
   }
@@ -460,7 +625,10 @@ export async function recordIntentResult({ workDir, result, results, summary }) 
     error.data = {
       reason: `intent_${agentResult.status}`,
       ...(conflictingIntents ? { intents: conflictingIntents } : {}),
-      choices: agentResult.status === 'failed' ? ['revise', 'abort'] : ['keep', 'abort'],
+      choices:
+        agentResult.status === 'failed'
+          ? ['revise', 'abort']
+          : ['keep', 'mark_obsolete', 'abort'],
     };
     throw error;
   }
@@ -517,6 +685,46 @@ export async function continueKeepingObsoleteIntents({ workDir }) {
   return {
     envelopeStatus: 'work_order',
     resolution: 'keep',
+    intents: manifest.semanticConflict.intents,
+    ...workOrderData(resumed, resolvedWorkDir),
+  };
+}
+
+export async function continueMarkingObsoleteIntents({ workDir }) {
+  const { manifest, resolvedWorkDir } = await loadManifest(workDir);
+  if (
+    manifest.phase !== 'awaiting_obsolete_resolution' ||
+    manifest.semanticConflict?.result !== 'obsolete'
+  ) {
+    throw intentError('invalid_continuation', 'This attempt is not awaiting an obsolete-Intent choice.');
+  }
+  const obsoleteById = new Map(
+    manifest.semanticConflict.intents.map(({ id, summary }) => [id, summary]),
+  );
+  const intents = manifest.operation.intents.map((intent) =>
+    obsoleteById.has(intent.id)
+      ? { ...intent, state: 'expired', obsoleteReason: obsoleteById.get(intent.id) }
+      : intent,
+  );
+  const resumed = {
+    ...manifest,
+    phase: 'awaiting_agent_result',
+    operation: {
+      ...manifest.operation,
+      type: 'intent_obsolete',
+      intents,
+      effectiveIntents: intents.filter(({ state }) => state === 'active'),
+      mutation: {
+        type: 'obsolete',
+        intents: manifest.semanticConflict.intents,
+      },
+    },
+    obsoleteResolution: 'mark_obsolete',
+  };
+  await saveManifest(resolvedWorkDir, resumed);
+  return {
+    envelopeStatus: 'work_order',
+    resolution: 'mark_obsolete',
     intents: manifest.semanticConflict.intents,
     ...workOrderData(resumed, resolvedWorkDir),
   };

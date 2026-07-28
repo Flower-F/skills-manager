@@ -7,6 +7,17 @@ import { fileURLToPath } from 'node:url';
 // Keep the CLI protocol stable independently from the Skill package name.
 const ENVELOPE_VERSION = 1;
 const MINIMUM_NODE_MAJOR = 22;
+const INTENT_MUTATION_OPTIONS = {
+  'intent-delete': new Set(['--confirm-delete', '--intent-id', '--runtime', '--skill']),
+  'intent-disable': new Set(['--intent-id', '--runtime', '--skill']),
+  'intent-edit': new Set(['--intent', '--intent-id', '--runtime', '--skill']),
+  'intent-enable': new Set(['--intent-id', '--runtime', '--skill']),
+  'intent-obsolete': new Set(['--intent-id', '--reason', '--runtime', '--skill']),
+};
+const INTENT_MUTATION_COMMANDS = Object.keys(INTENT_MUTATION_OPTIONS);
+const INTENT_MUTATION_OPERATION_TYPES = INTENT_MUTATION_COMMANDS.map((command) =>
+  command.replace('-', '_'),
+);
 const COMMAND_OPTIONS = {
   abort: new Set(['--work-dir']),
   assess: new Set(['--runtime', '--scope', '--source', '--skill']),
@@ -16,16 +27,19 @@ const COMMAND_OPTIONS = {
     '--accept-risk',
     '--accept-semantic-revision',
     '--keep-obsolete-intents',
+    '--mark-obsolete-intents',
     '--work-dir',
   ]),
   discover: new Set(['--runtime', '--source']),
   inspect: new Set(['--runtime', '--scope']),
   'intent-add': new Set(['--intent', '--runtime', '--skill']),
+  'intent-list': new Set(['--skill']),
   'intent-result': new Set(['--result', '--results', '--summary', '--work-dir']),
   publish: new Set(['--accept-publication', '--work-dir']),
   update: new Set(['--runtime', '--skill']),
   validate: new Set(['--work-dir']),
   'work-order': new Set(['--work-dir']),
+  ...INTENT_MUTATION_OPTIONS,
 };
 
 function writeEnvelope(envelope, exitCode = 0) {
@@ -46,7 +60,9 @@ function parseArguments(arguments_) {
     '--accept-publication',
     '--accept-risk',
     '--accept-semantic-revision',
+    '--confirm-delete',
     '--keep-obsolete-intents',
+    '--mark-obsolete-intents',
   ]);
   const allowedOptions = COMMAND_OPTIONS[command];
   for (let index = 0; index < tokens.length; index += 1) {
@@ -112,6 +128,8 @@ async function main() {
         'discover',
         'assess',
         'intent-add',
+        'intent-list',
+        ...INTENT_MUTATION_COMMANDS,
         'work-order',
         'intent-result',
         'continue',
@@ -126,7 +144,15 @@ async function main() {
       throw error;
     }
     if (
-      !['continue', 'abort', 'validate', 'publish', 'work-order', 'intent-result'].includes(
+      ![
+        'continue',
+        'abort',
+        'validate',
+        'publish',
+        'work-order',
+        'intent-result',
+        'intent-list',
+      ].includes(
         parsed.command,
       ) &&
       !parsed.options.runtime
@@ -212,6 +238,7 @@ async function main() {
         parsed.options['accept-risk'],
         parsed.options['accept-semantic-revision'],
         parsed.options['keep-obsolete-intents'],
+        parsed.options['mark-obsolete-intents'],
       ].filter(Boolean).length;
       if (confirmationCount !== 1) {
         const error = new Error(
@@ -231,6 +258,9 @@ async function main() {
       } else if (parsed.options['keep-obsolete-intents'] === true) {
         const { continueKeepingObsoleteIntents } = await import('./lib/intents.mjs');
         data = await continueKeepingObsoleteIntents({ workDir: parsed.options['work-dir'] });
+      } else if (parsed.options['mark-obsolete-intents'] === true) {
+        const { continueMarkingObsoleteIntents } = await import('./lib/intents.mjs');
+        data = await continueMarkingObsoleteIntents({ workDir: parsed.options['work-dir'] });
       } else {
         const { continueRiskAcceptance } = await import('./lib/upstream.mjs');
         data = await continueRiskAcceptance({
@@ -238,13 +268,58 @@ async function main() {
           acceptRisk: parsed.options['accept-risk'] === true,
           acceptCopyMode: parsed.options['accept-copy-mode'] === true,
         });
-        if (data.operation?.type === 'update') {
+        if (
+          data.operation?.type === 'update' ||
+          INTENT_MUTATION_OPERATION_TYPES.includes(data.operation?.type)
+        ) {
           const { prepareUpdateAttempt } = await import('./lib/intents.mjs');
           data = await prepareUpdateAttempt({ workDir: parsed.options['work-dir'] });
         }
       }
       const { envelopeStatus = 'ready', ...result } = data;
       writeEnvelope({ status: envelopeStatus, command: 'continue', data: result });
+    } else if (parsed.command === 'intent-list') {
+      if (!parsed.options.skill) {
+        const error = new Error('intent-list requires --skill <skill-id>.');
+        error.code = 'invalid_arguments';
+        throw error;
+      }
+      const { listIntents } = await import('./lib/intents.mjs');
+      const data = await listIntents({
+        repositoryRoot: await findRepositoryRoot(process.cwd()),
+        skill: parsed.options.skill,
+      });
+      writeEnvelope({ status: 'ready', command: 'intent-list', data });
+    } else if (
+      INTENT_MUTATION_COMMANDS.includes(parsed.command)
+    ) {
+      if (
+        !parsed.options.skill ||
+        !parsed.options['intent-id'] ||
+        (parsed.command === 'intent-edit' && !parsed.options.intent) ||
+        (parsed.command === 'intent-obsolete' && !parsed.options.reason)
+      ) {
+        const error = new Error(`${parsed.command} is missing its required Skill or Intent arguments.`);
+        error.code = 'invalid_arguments';
+        throw error;
+      }
+      const { beginIntentMutation } = await import('./lib/intents.mjs');
+      const data = await beginIntentMutation({
+        repositoryRoot: await findRepositoryRoot(process.cwd()),
+        skill: parsed.options.skill,
+        intentId: parsed.options['intent-id'],
+        mutation: parsed.command.slice('intent-'.length),
+        text: parsed.options.intent,
+        reason: parsed.options.reason,
+        confirmDelete: parsed.options['confirm-delete'] === true,
+        currentRuntime: parsed.options.runtime,
+        environment: process.env,
+      });
+      const {
+        envelopeStatus = data.security?.decision === 'approved' ? 'ready' : 'needs_confirmation',
+        ...result
+      } = data;
+      writeEnvelope({ status: envelopeStatus, command: parsed.command, data: result });
     } else if (parsed.command === 'update') {
       if (!parsed.options.skill) {
         const error = new Error('update requires --skill <skill-id>.');

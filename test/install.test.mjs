@@ -1863,6 +1863,13 @@ test('an obsolete update result requires an explicit keep decision before review
   await mkdir(join(repository, '.git'));
   const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
   const audit = await auditService();
+  const updateEnvironment = {
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+    FAKE_UPSTREAM_SKILL_CONTENT:
+      '---\nname: alpha-skill\ndescription: Upstream is concise.\n---\n\nUse concise examples.\n',
+  };
   try {
     await installManagedAlpha(repository, fake, audit);
     await publishOneIntent(repository, fake, audit, 'Prefer concise examples.', 'Use concise examples.');
@@ -1870,13 +1877,7 @@ test('an obsolete update result requires an explicit keep decision before review
       ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
       {
         cwd: repository,
-        env: {
-          FAKE_UPSTREAM_CALLS: fake.calls,
-          SKILLS_MANAGER_AUDIT_URL: audit.url,
-          SKILLS_MANAGER_NPX_PATH: fake.executable,
-          FAKE_UPSTREAM_SKILL_CONTENT:
-            '---\nname: alpha-skill\ndescription: Upstream is concise.\n---\n\nUse concise examples.\n',
-        },
+        env: updateEnvironment,
       },
     );
     const ordered = await runCli(['work-order', '--work-dir', updated.result.data.workDir], {
@@ -1897,7 +1898,7 @@ test('an obsolete update result requires an explicit keep decision before review
       { cwd: repository, env: {} },
     );
     assert.equal(obsolete.result.status, 'conflict');
-    assert.deepEqual(obsolete.result.data.choices, ['keep', 'abort']);
+    assert.deepEqual(obsolete.result.data.choices, ['keep', 'mark_obsolete', 'abort']);
     const kept = await runCli(
       ['continue', '--work-dir', updated.result.data.workDir, '--keep-obsolete-intents'],
       { cwd: repository, env: {} },
@@ -1916,6 +1917,404 @@ test('an obsolete update result requires an explicit keep decision before review
     );
     assert.equal(applied.result.status, 'needs_confirmation');
     assert.deepEqual(applied.result.data.review.materialDiff, []);
+    await runCli(['abort', '--work-dir', updated.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+
+    const expiring = await runCli(
+      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      { cwd: repository, env: updateEnvironment },
+    );
+    const expiringOrder = await runCli(
+      ['work-order', '--work-dir', expiring.result.data.workDir],
+      { cwd: repository, env: {} },
+    );
+    const expiringId = expiringOrder.result.data.effectiveIntents[0].id;
+    await runCli(
+      [
+        'intent-result',
+        '--work-dir',
+        expiring.result.data.workDir,
+        '--results',
+        JSON.stringify([
+          {
+            id: expiringId,
+            status: 'obsolete',
+            summary: 'Latest upstream already satisfies it.',
+          },
+        ]),
+      ],
+      { cwd: repository, env: {} },
+    );
+    const marked = await runCli(
+      ['continue', '--work-dir', expiring.result.data.workDir, '--mark-obsolete-intents'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(marked.result.status, 'work_order');
+    assert.equal(marked.result.data.resolution, 'mark_obsolete');
+    assert.deepEqual(marked.result.data.effectiveIntents, []);
+    const markedResult = await runCli(
+      [
+        'intent-result',
+        '--work-dir',
+        expiring.result.data.workDir,
+        '--results',
+        '[]',
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(markedResult.result.status, 'needs_confirmation');
+    const markedPublished = await runCli(
+      ['publish', '--work-dir', expiring.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(markedPublished.result.status, 'complete');
+    const listed = await runCli(['intent-list', '--skill', 'alpha-skill'], {
+      cwd: repository,
+      env: {},
+    });
+    assert.equal(listed.result.data.intents[0].state, 'expired');
+    assert.equal(
+      listed.result.data.intents[0].obsoleteReason,
+      'Latest upstream already satisfies it.',
+    );
+  } finally {
+    await audit.close();
+  }
+});
+
+async function completeIntentMutation({ repository, started, body }) {
+  if (started.result.status === 'ready') {
+    const ordered = await runCli(['work-order', '--work-dir', started.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    await writeFile(
+      join(started.result.data.candidate.root, 'SKILL.md'),
+      `---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n${body}\n`,
+    );
+    const results = ordered.result.data.effectiveIntents.map(({ id }) => ({ id, status: 'applied' }));
+    const resulted = await runCli(
+      [
+        'intent-result',
+        '--work-dir',
+        started.result.data.workDir,
+        '--results',
+        JSON.stringify(results),
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(resulted.result.status, 'needs_confirmation');
+  } else {
+    assert.equal(started.result.status, 'needs_confirmation');
+  }
+  const published = await runCli(
+    ['publish', '--work-dir', started.result.data.workDir, '--accept-publication'],
+    { cwd: repository, env: {} },
+  );
+  assert.equal(published.result.status, 'complete');
+}
+
+test('Intent lifecycle mutations rerender latest upstream and commit only with publication', async () => {
+  const repository = await temporaryDirectory('skills-manager-intent-lifecycle-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+  };
+  const invoke = (arguments_) => runCli(arguments_, { cwd: repository, env: environment });
+  const list = () => runCli(['intent-list', '--skill', 'alpha-skill'], { cwd: repository, env: {} });
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    await publishOneIntent(repository, fake, audit, 'Prefer concise examples.', 'Concise examples.');
+    await publishOneIntent(
+      repository,
+      fake,
+      audit,
+      'Include failure guidance.',
+      'Concise examples.\n\nFailure guidance.',
+    );
+    let listed = await list();
+    assert.equal(listed.result.status, 'ready');
+    assert.deepEqual(listed.result.data.intents.map(({ state }) => state), ['active', 'active']);
+    const [firstId, secondId] = listed.result.data.intents.map(({ id }) => id);
+
+    const edited = await invoke([
+      'intent-edit',
+      '--skill',
+      'alpha-skill',
+      '--intent-id',
+      firstId,
+      '--intent',
+      'Prefer one concise example.',
+      '--runtime',
+      'codex',
+    ]);
+    assert.equal(edited.result.status, 'ready');
+    listed = await list();
+    assert.equal(listed.result.data.intents[0].text, 'Prefer concise examples.');
+    await completeIntentMutation({
+      repository,
+      started: edited,
+      body: 'One concise example.\n\nFailure guidance.',
+    });
+    listed = await list();
+    assert.equal(listed.result.data.intents[0].text, 'Prefer one concise example.');
+
+    const disabled = await invoke([
+      'intent-disable',
+      '--skill',
+      'alpha-skill',
+      '--intent-id',
+      secondId,
+      '--runtime',
+      'codex',
+    ]);
+    await completeIntentMutation({ repository, started: disabled, body: 'One concise example.' });
+    listed = await list();
+    assert.equal(listed.result.data.intents[1].state, 'disabled');
+    assert.deepEqual(listed.result.data.effectiveIntentIds, [firstId]);
+
+    const enabled = await invoke([
+      'intent-enable',
+      '--skill',
+      'alpha-skill',
+      '--intent-id',
+      secondId,
+      '--runtime',
+      'codex',
+    ]);
+    await completeIntentMutation({
+      repository,
+      started: enabled,
+      body: 'One concise example.\n\nFailure guidance.',
+    });
+    listed = await list();
+    assert.equal(listed.result.data.intents[1].state, 'active');
+
+    const obsolete = await invoke([
+      'intent-obsolete',
+      '--skill',
+      'alpha-skill',
+      '--intent-id',
+      firstId,
+      '--reason',
+      'Latest upstream now provides a concise example.',
+      '--runtime',
+      'codex',
+    ]);
+    await completeIntentMutation({ repository, started: obsolete, body: 'Failure guidance.' });
+    listed = await list();
+    assert.equal(listed.result.data.intents[0].state, 'expired');
+    assert.equal(
+      listed.result.data.intents[0].obsoleteReason,
+      'Latest upstream now provides a concise example.',
+    );
+
+    const proposedDelete = await invoke([
+      'intent-delete',
+      '--skill',
+      'alpha-skill',
+      '--intent-id',
+      firstId,
+      '--runtime',
+      'codex',
+    ]);
+    assert.equal(proposedDelete.result.status, 'conflict');
+    assert.equal(proposedDelete.result.data.reason, 'permanent_intent_deletion');
+    assert.deepEqual(proposedDelete.result.data.choices, ['confirm_delete', 'cancel']);
+    const deletedFirst = await invoke([
+      'intent-delete',
+      '--skill',
+      'alpha-skill',
+      '--intent-id',
+      firstId,
+      '--runtime',
+      'codex',
+      '--confirm-delete',
+    ]);
+    await completeIntentMutation({ repository, started: deletedFirst, body: 'Failure guidance.' });
+    listed = await list();
+    assert.deepEqual(listed.result.data.intents.map(({ id }) => id), [secondId]);
+
+    const deletedLast = await invoke([
+      'intent-delete',
+      '--skill',
+      'alpha-skill',
+      '--intent-id',
+      secondId,
+      '--runtime',
+      'codex',
+      '--confirm-delete',
+    ]);
+    await completeIntentMutation({ repository, started: deletedLast, body: '' });
+    listed = await list();
+    assert.deepEqual(listed.result.data.intents, []);
+    assert.deepEqual(listed.result.data.effectiveIntentIds, []);
+    assert.doesNotMatch(
+      await readFile(join(repository, '.agents/skills/alpha-skill/SKILL.md'), 'utf8'),
+      /Failure guidance|concise example/i,
+    );
+  } finally {
+    await audit.close();
+  }
+});
+
+test('an obsolete newly proposed Intent can be explicitly persisted as expired', async () => {
+  const repository = await temporaryDirectory('skills-manager-intent-add-obsolete-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const begun = await runCli(
+      [
+        'intent-add',
+        '--skill',
+        'alpha-skill',
+        '--intent',
+        'Prefer concise examples.',
+        '--runtime',
+        'codex',
+      ],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+        },
+      },
+    );
+    const ordered = await runCli(['work-order', '--work-dir', begun.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    const intentId = ordered.result.data.intent.id;
+    const obsolete = await runCli(
+      [
+        'intent-result',
+        '--work-dir',
+        begun.result.data.workDir,
+        '--result',
+        'obsolete',
+        '--summary',
+        'Latest upstream already uses concise examples.',
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(obsolete.result.status, 'conflict');
+    assert.equal(obsolete.result.data.intents[0].id, intentId);
+    const marked = await runCli(
+      ['continue', '--work-dir', begun.result.data.workDir, '--mark-obsolete-intents'],
+      { cwd: repository, env: {} },
+    );
+    assert.deepEqual(marked.result.data.effectiveIntents, []);
+    const resulted = await runCli(
+      ['intent-result', '--work-dir', begun.result.data.workDir, '--results', '[]'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(resulted.result.status, 'needs_confirmation');
+    const published = await runCli(
+      ['publish', '--work-dir', begun.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(published.result.status, 'complete');
+    const listed = await runCli(['intent-list', '--skill', 'alpha-skill'], {
+      cwd: repository,
+      env: {},
+    });
+    assert.deepEqual(listed.result.data.intents, [
+      {
+        id: intentId,
+        text: 'Prefer concise examples.',
+        state: 'expired',
+        obsoleteReason: 'Latest upstream already uses concise examples.',
+      },
+    ]);
+  } finally {
+    await audit.close();
+  }
+});
+
+test('a failed lifecycle regeneration leaves Intent state and Rendering unchanged', async () => {
+  const repository = await temporaryDirectory('skills-manager-intent-lifecycle-failure-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    await publishOneIntent(repository, fake, audit, 'Prefer concise examples.', 'Concise examples.');
+    const listed = await runCli(['intent-list', '--skill', 'alpha-skill'], {
+      cwd: repository,
+      env: {},
+    });
+    const intentId = listed.result.data.intents[0].id;
+    const beforeRendering = await readFile(
+      join(repository, '.agents/skills/alpha-skill/SKILL.md'),
+      'utf8',
+    );
+    const edited = await runCli(
+      [
+        'intent-edit',
+        '--skill',
+        'alpha-skill',
+        '--intent-id',
+        intentId,
+        '--intent',
+        'Prefer exactly one concise example.',
+        '--runtime',
+        'codex',
+      ],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+        },
+      },
+    );
+    assert.equal(edited.result.status, 'ready');
+    const ordered = await runCli(['work-order', '--work-dir', edited.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    const failed = await runCli(
+      [
+        'intent-result',
+        '--work-dir',
+        edited.result.data.workDir,
+        '--results',
+        JSON.stringify([
+          {
+            id: ordered.result.data.effectiveIntents[0].id,
+            status: 'failed',
+            summary: 'The requested outcome conflicts with latest upstream.',
+          },
+        ]),
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(failed.result.status, 'conflict');
+    assert.equal(failed.result.data.reason, 'intent_failed');
+    const after = await runCli(['intent-list', '--skill', 'alpha-skill'], {
+      cwd: repository,
+      env: {},
+    });
+    assert.equal(after.result.data.intents[0].state, 'active');
+    assert.equal(
+      await readFile(join(repository, '.agents/skills/alpha-skill/SKILL.md'), 'utf8'),
+      beforeRendering,
+    );
+    await runCli(['abort', '--work-dir', edited.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
   } finally {
     await audit.close();
   }
