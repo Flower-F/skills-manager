@@ -20,13 +20,36 @@ async function fakeUpstream(workspace) {
     executable,
     `#!/usr/bin/env node
 import { createHash } from 'node:crypto';
-import { appendFile, mkdir, symlink, writeFile } from 'node:fs/promises';
+import { appendFile, mkdir, rm, symlink, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 await appendFile(process.env.FAKE_UPSTREAM_CALLS, JSON.stringify({
   argv: process.argv.slice(2),
   cwd: process.cwd(),
   telemetry: process.env.DISABLE_TELEMETRY ?? null,
 }) + '\\n');
+const command = process.argv.find((argument) => argument === 'add' || argument === 'remove');
+if (command === 'remove') {
+  if (process.env.FAKE_UPSTREAM_REMOVE_FAIL === '1') process.exit(7);
+  const skill = process.argv[process.argv.indexOf('remove') + 1];
+  const runtime = process.argv[process.argv.indexOf('--agent') + 1];
+  const global = process.argv.includes('--global');
+  const directory = global && runtime === 'codex'
+    ? '.codex/skills/'
+    : runtime === 'claude-code'
+      ? '.claude/skills/'
+      : runtime === 'droid'
+        ? '.factory/skills/'
+        : '.agents/skills/';
+  await rm(new URL('./' + directory + skill + '/', 'file://' + process.cwd() + '/'), {
+    recursive: true,
+    force: true,
+  });
+  if (process.env.FAKE_UPSTREAM_REMOVE_LINK === '1') {
+    await rm(new URL('./.claude/skills', 'file://' + process.cwd() + '/'), { force: true });
+  }
+  if (process.env.FAKE_UPSTREAM_REMOVE_FAIL_AFTER_DELETE === '1') process.exit(8);
+  process.exit(0);
+}
 const skill = process.argv[process.argv.indexOf('--skill') + 1];
 const source = process.argv[process.argv.indexOf('add') + 1];
 const runtime = process.argv[process.argv.indexOf('--agent') + 1];
@@ -935,6 +958,32 @@ async function installManagedAlpha(repository, fake, audit) {
     cwd: repository,
     env: {},
   });
+}
+
+async function cloneManagedAlphaToGlobal(repository, globalHome) {
+  const projectState = JSON.parse(
+    await readFile(join(repository, '.skills-manager/state.json'), 'utf8'),
+  );
+  const [key, projectManaged] = Object.entries(projectState.skills)[0];
+  const globalManaged = {
+    ...projectManaged,
+    scope: 'global',
+    physicalTargets: ['.codex/skills/alpha-skill'],
+    topologyLinks: [],
+  };
+  await mkdir(join(globalHome, '.skills-manager'), { recursive: true });
+  await writeFile(
+    join(globalHome, '.skills-manager/state.json'),
+    `${JSON.stringify({ version: 1, skills: { [key]: globalManaged } }, null, 2)}\n`,
+  );
+  await mkdir(join(globalHome, '.codex/skills'), { recursive: true });
+  await cp(
+    join(repository, '.agents/skills/alpha-skill'),
+    join(globalHome, '.codex/skills/alpha-skill'),
+    { recursive: true },
+  );
+  await cp(join(repository, 'skills-lock.json'), join(globalHome, 'skills-lock.json'));
+  return globalManaged;
 }
 
 test('Intent input is constrained to one concise semantic outcome', async () => {
@@ -3653,6 +3702,510 @@ test('Archaeology recovers a changed secondary copy and reconverges every Render
     const copy = await readFile(join(repository, '.claude/skills/alpha-skill/SKILL.md'), 'utf8');
     assert.equal(copy, canonical);
     assert.match(copy, /Recovered secondary outcome/);
+  } finally {
+    await audit.close();
+  }
+});
+
+test('remove explains and retains project Intent state before deleting every managed copy', async () => {
+  const repository = await temporaryDirectory('skills-manager-remove-project-');
+  await mkdir(join(repository, '.git'));
+  await mkdir(join(repository, '.agents/skills'), { recursive: true });
+  await mkdir(join(repository, '.claude/skills'), { recursive: true });
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+  };
+  try {
+    const assessed = await assessedAttempt(repository, fake, audit);
+    await runCli(['validate', '--work-dir', assessed.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    await runCli(['continue', '--work-dir', assessed.result.data.workDir, '--accept-copy-mode'], {
+      cwd: repository,
+      env: {},
+    });
+    await runCli(['publish', '--work-dir', assessed.result.data.workDir, '--accept-publication'], {
+      cwd: repository,
+      env: {},
+    });
+    const state = JSON.parse(await readFile(join(repository, '.skills-manager/state.json'), 'utf8'));
+    const [managed] = Object.values(state.skills);
+    const hash = createHash('sha256')
+      .update(managed.identity.source)
+      .update('\0')
+      .update(managed.identity.skill)
+      .digest('hex');
+    const intentPath = join(
+      repository,
+      `.skills-manager/intents/alpha-skill__${hash.slice(0, 8)}.json`,
+    );
+    await mkdir(dirname(intentPath), { recursive: true });
+    await writeFile(
+      intentPath,
+      `${JSON.stringify({
+        version: 1,
+        identity: managed.identity,
+        intents: [{ id: 'keep-me', text: 'Preserve this outcome.', state: 'active' }],
+        suppressedGlobalIntentIds: ['global-exception'],
+      }, null, 2)}\n`,
+    );
+    const conflicted = await runCli(
+      ['remove', '--scope', 'project', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(conflicted.result.status, 'conflict');
+    assert.equal(conflicted.result.data.reason, 'remaining_intent_state');
+    assert.equal(conflicted.result.data.impact.activeIntents[0].id, 'keep-me');
+    assert.deepEqual(conflicted.result.data.impact.suppressedGlobalIntentIds, ['global-exception']);
+
+    await writeFile(
+      join(repository, '.claude/skills/alpha-skill/SKILL.md'),
+      '# unexplained secondary copy\n',
+    );
+    const unexplained = await runCli(
+      [
+        'remove',
+        '--skill',
+        'alpha-skill',
+        '--runtime',
+        'codex',
+        '--scope',
+        'project',
+        '--source',
+        'example/skills',
+        '--upstream-skill',
+        'skills/alpha-skill/SKILL.md',
+        '--intent-policy',
+        'retain',
+        '--confirm-removal',
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(unexplained.result.status, 'conflict');
+    assert.equal(unexplained.result.data.reason, 'untracked_change');
+    await cp(
+      join(repository, '.agents/skills/alpha-skill'),
+      join(repository, '.claude/skills/alpha-skill'),
+      { recursive: true, force: true },
+    );
+    await mkdir(join(repository, '.factory/skills'), { recursive: true });
+    await cp(
+      join(repository, '.agents/skills/alpha-skill'),
+      join(repository, '.factory/skills/alpha-skill'),
+      { recursive: true },
+    );
+    const extraCopy = await runCli(
+      [
+        'remove',
+        '--scope',
+        'project',
+        '--skill',
+        'alpha-skill',
+        '--runtime',
+        'codex',
+        '--source',
+        'example/skills',
+        '--upstream-skill',
+        'skills/alpha-skill/SKILL.md',
+        '--intent-policy',
+        'retain',
+        '--confirm-removal',
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(extraCopy.result.status, 'conflict');
+    assert.equal(extraCopy.result.data.reason, 'unexplained_copy');
+    await rm(join(repository, '.factory/skills/alpha-skill'), { recursive: true });
+    const removalPreview = await runCli(
+      [
+        'remove',
+        '--scope',
+        'project',
+        '--skill',
+        'alpha-skill',
+        '--runtime',
+        'codex',
+        '--intent-policy',
+        'retain',
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(removalPreview.result.status, 'needs_confirmation');
+    const changedPolicy = await runCli(
+      [
+        'remove',
+        '--scope',
+        'project',
+        '--skill',
+        'alpha-skill',
+        '--runtime',
+        'codex',
+        '--source',
+        'example/skills',
+        '--upstream-skill',
+        'skills/alpha-skill/SKILL.md',
+        '--intent-policy',
+        'delete',
+        '--confirm-removal',
+        '--confirmation-token',
+        removalPreview.result.data.confirmation.token,
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(changedPolicy.result.status, 'conflict');
+    assert.equal(changedPolicy.result.data.reason, 'removal_preview_changed');
+    const changedIntentRecord = JSON.parse(await readFile(intentPath, 'utf8'));
+    changedIntentRecord.intents.push({
+      id: 'added-after-preview',
+      text: 'Do not silently delete me.',
+      state: 'active',
+    });
+    await writeFile(intentPath, `${JSON.stringify(changedIntentRecord, null, 2)}\n`);
+    const staleConfirmation = await runCli(
+      [
+        'remove',
+        '--scope',
+        'project',
+        '--skill',
+        'alpha-skill',
+        '--runtime',
+        'codex',
+        '--source',
+        'example/skills',
+        '--upstream-skill',
+        'skills/alpha-skill/SKILL.md',
+        '--intent-policy',
+        'retain',
+        '--confirm-removal',
+        '--confirmation-token',
+        removalPreview.result.data.confirmation.token,
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(staleConfirmation.result.status, 'conflict');
+    assert.equal(staleConfirmation.result.data.reason, 'removal_preview_changed');
+    const refreshedPreview = await runCli(
+      [
+        'remove',
+        '--scope',
+        'project',
+        '--skill',
+        'alpha-skill',
+        '--runtime',
+        'codex',
+        '--intent-policy',
+        'retain',
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(refreshedPreview.result.status, 'needs_confirmation');
+    const removed = await runCli(
+      [
+        'remove',
+        '--skill',
+        'alpha-skill',
+        '--runtime',
+        'codex',
+        '--scope',
+        'project',
+        '--source',
+        'example/skills',
+        '--upstream-skill',
+        'skills/alpha-skill/SKILL.md',
+        '--intent-policy',
+        'retain',
+        '--confirm-removal',
+        '--confirmation-token',
+        refreshedPreview.result.data.confirmation.token,
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(removed.result.status, 'complete', JSON.stringify(removed.result));
+    assert.equal(removed.result.data.intents, 'retained');
+    await assert.rejects(lstat(join(repository, '.agents/skills/alpha-skill')), { code: 'ENOENT' });
+    await assert.rejects(lstat(join(repository, '.claude/skills/alpha-skill')), { code: 'ENOENT' });
+    assert.ok(await lstat(intentPath));
+    const nextState = JSON.parse(await readFile(join(repository, '.skills-manager/state.json'), 'utf8'));
+    assert.deepEqual(nextState.skills, {});
+    const nextLock = JSON.parse(await readFile(join(repository, 'skills-lock.json'), 'utf8'));
+    assert.equal(nextLock.skills['alpha-skill'], undefined);
+    const repeated = await runCli(
+      [
+        'remove',
+        '--scope',
+        'project',
+        '--skill',
+        'alpha-skill',
+        '--runtime',
+        'codex',
+        '--source',
+        'example/skills',
+        '--upstream-skill',
+        'skills/alpha-skill/SKILL.md',
+        '--confirm-removal',
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(repeated.result.status, 'complete');
+    assert.equal(repeated.result.data.alreadyAbsent, true);
+    const calls = (await readFile(fake.calls, 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.deepEqual(calls.at(-1).argv.slice(2), [
+      'remove',
+      'alpha-skill',
+      '--agent',
+      'codex',
+      '--yes',
+    ]);
+  } finally {
+    await audit.close();
+  }
+});
+
+test('project removal confirms inherited global exposure and global removal preserves project scope', async () => {
+  const repository = await temporaryDirectory('skills-manager-remove-scopes-');
+  const globalHome = await temporaryDirectory('skills-manager-remove-global-home-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    HOME: globalHome,
+    CODEX_HOME: join(globalHome, '.codex'),
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+  };
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    await cloneManagedAlphaToGlobal(repository, globalHome);
+    const globalStatePath = join(globalHome, '.skills-manager/state.json');
+    const ambiguousGlobalState = JSON.parse(await readFile(globalStatePath, 'utf8'));
+    const [globalManaged] = Object.values(ambiguousGlobalState.skills);
+    ambiguousGlobalState.skills.competing = {
+      ...globalManaged,
+      identity: { source: 'competing/skills', skill: globalManaged.identity.skill },
+    };
+    await writeFile(globalStatePath, `${JSON.stringify(ambiguousGlobalState, null, 2)}\n`);
+    const ambiguousGlobal = await runCli(
+      ['remove', '--scope', 'global', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(ambiguousGlobal.result.status, 'conflict');
+    assert.equal(ambiguousGlobal.result.data.reason, 'ambiguous_skill_identity');
+    assert.deepEqual(ambiguousGlobal.result.data.resolution.options, {
+      scope: 'global',
+      choice: 'manage_clean',
+    });
+    const resolvedGlobal = await runCli(
+      [
+        'identity-resolve',
+        '--scope',
+        'global',
+        '--skill',
+        'alpha-skill',
+        '--source',
+        'example/skills',
+        '--upstream-skill',
+        'skills/alpha-skill/SKILL.md',
+        '--choice',
+        'manage_clean',
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(resolvedGlobal.result.status, 'complete', JSON.stringify(resolvedGlobal.result));
+    const exposed = await runCli(
+      [
+        'remove',
+        '--scope',
+        'project',
+        '--skill',
+        'alpha-skill',
+        '--runtime',
+        'codex',
+        '--source',
+        'example/skills',
+        '--upstream-skill',
+        'skills/alpha-skill/SKILL.md',
+        '--confirm-removal',
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(exposed.result.status, 'conflict');
+    assert.equal(exposed.result.data.reason, 'scope_removal_changes_exposure');
+    const projectPreview = await runCli(
+      [
+        'remove',
+        '--scope',
+        'project',
+        '--skill',
+        'alpha-skill',
+        '--runtime',
+        'codex',
+        '--confirm-exposure',
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(projectPreview.result.status, 'needs_confirmation');
+    const removedProject = await runCli(
+      [
+        'remove',
+        '--skill',
+        'alpha-skill',
+        '--runtime',
+        'codex',
+        '--scope',
+        'project',
+        '--source',
+        'example/skills',
+        '--upstream-skill',
+        'skills/alpha-skill/SKILL.md',
+        '--confirm-exposure',
+        '--confirm-removal',
+        '--confirmation-token',
+        projectPreview.result.data.confirmation.token,
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(removedProject.result.status, 'complete', JSON.stringify(removedProject.result));
+    assert.ok(await lstat(join(globalHome, '.codex/skills/alpha-skill')));
+
+    const globalOnlyPreview = await runCli(
+      ['remove', '--scope', 'global', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(globalOnlyPreview.result.status, 'needs_confirmation');
+    const removedGlobalOnly = await runCli(
+      [
+        'remove',
+        '--scope',
+        'global',
+        '--skill',
+        'alpha-skill',
+        '--runtime',
+        'codex',
+        '--source',
+        'example/skills',
+        '--upstream-skill',
+        'skills/alpha-skill/SKILL.md',
+        '--confirm-removal',
+        '--confirmation-token',
+        globalOnlyPreview.result.data.confirmation.token,
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(removedGlobalOnly.result.status, 'complete', JSON.stringify(removedGlobalOnly.result));
+    await assert.rejects(lstat(join(globalHome, '.codex/skills/alpha-skill')), { code: 'ENOENT' });
+
+    await installManagedAlpha(repository, fake, audit);
+    await cloneManagedAlphaToGlobal(repository, globalHome);
+    const globalPreview = await runCli(
+      ['remove', '--scope', 'global', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(globalPreview.result.status, 'needs_confirmation');
+    const removedGlobal = await runCli(
+      [
+        'remove',
+        '--scope',
+        'global',
+        '--skill',
+        'alpha-skill',
+        '--runtime',
+        'codex',
+        '--source',
+        'example/skills',
+        '--upstream-skill',
+        'skills/alpha-skill/SKILL.md',
+        '--confirm-removal',
+        '--confirmation-token',
+        globalPreview.result.data.confirmation.token,
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(removedGlobal.result.status, 'complete', JSON.stringify(removedGlobal.result));
+    await assert.rejects(lstat(join(globalHome, '.codex/skills/alpha-skill')), { code: 'ENOENT' });
+    assert.ok(await lstat(join(repository, '.agents/skills/alpha-skill')));
+    const projectState = JSON.parse(
+      await readFile(join(repository, '.skills-manager/state.json'), 'utf8'),
+    );
+    assert.equal(Object.keys(projectState.skills).length, 1);
+  } finally {
+    await audit.close();
+  }
+});
+
+test('failed delegated removal preserves Rendering, state, and lock metadata', async () => {
+  const repository = await temporaryDirectory('skills-manager-remove-failure-');
+  await mkdir(join(repository, '.git'));
+  await mkdir(join(repository, '.claude'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const stateBefore = await readFile(join(repository, '.skills-manager/state.json'), 'utf8');
+    const lockBefore = await readFile(join(repository, 'skills-lock.json'), 'utf8');
+    const implicitScope = await runCli(
+      ['remove', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(implicitScope.result.status, 'failed');
+    assert.equal(implicitScope.result.error.code, 'invalid_arguments');
+    const preview = await runCli(
+      ['remove', '--scope', 'project', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(preview.result.status, 'needs_confirmation');
+    assert.equal(preview.result.data.impact.scope, 'project');
+    assert.equal(preview.result.data.impact.identity.source, 'example/skills');
+    const failed = await runCli(
+      [
+        'remove',
+        '--scope',
+        'project',
+        '--skill',
+        'alpha-skill',
+        '--runtime',
+        'codex',
+        '--source',
+        'example/skills',
+        '--upstream-skill',
+        'skills/alpha-skill/SKILL.md',
+        '--confirm-removal',
+        '--confirmation-token',
+        preview.result.data.confirmation.token,
+      ],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+          FAKE_UPSTREAM_REMOVE_FAIL_AFTER_DELETE: '1',
+          FAKE_UPSTREAM_REMOVE_LINK: '1',
+        },
+      },
+    );
+    assert.equal(failed.result.status, 'failed');
+    assert.equal(failed.result.error.code, 'upstream_failed');
+    assert.ok(await lstat(join(repository, '.agents/skills/alpha-skill')));
+    assert.equal((await lstat(join(repository, '.claude/skills'))).isSymbolicLink(), true);
+    assert.equal(await readlink(join(repository, '.claude/skills')), '../.agents/skills');
+    assert.equal(await readFile(join(repository, '.skills-manager/state.json'), 'utf8'), stateBefore);
+    assert.equal(await readFile(join(repository, 'skills-lock.json'), 'utf8'), lockBefore);
+    const external = await temporaryDirectory('skills-manager-remove-external-intents-');
+    const marker = join(external, 'marker.txt');
+    await writeFile(marker, 'outside\n');
+    await symlink(external, join(repository, '.skills-manager/intents'));
+    const unsafe = await runCli(
+      ['remove', '--scope', 'project', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(unsafe.result.status, 'failed');
+    assert.equal(unsafe.result.error.code, 'invalid_publication_target');
+    assert.equal(await readFile(marker, 'utf8'), 'outside\n');
   } finally {
     await audit.close();
   }

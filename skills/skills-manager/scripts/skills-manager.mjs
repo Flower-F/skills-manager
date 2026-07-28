@@ -14,6 +14,8 @@ const BOOLEAN_OPTIONS = new Set([
   '--accept-risk',
   '--accept-semantic-revision',
   '--confirm-delete',
+  '--confirm-exposure',
+  '--confirm-removal',
   '--confirm-ownership',
   '--decline-ownership',
   '--keep-obsolete-intents',
@@ -42,7 +44,7 @@ const COMMANDS = {
   discover: command(['--runtime', '--source']),
   inspect: command(['--runtime', '--scope']),
   'identity-resolve': command(
-    ['--choice', '--runtime', '--skill', '--source', '--upstream-skill'],
+    ['--choice', '--runtime', '--scope', '--skill', '--source', '--upstream-skill'],
     false,
   ),
   'intent-add': command(['--intent', '--runtime', '--scope', '--skill']),
@@ -55,6 +57,17 @@ const COMMANDS = {
   'intent-result': command(['--result', '--results', '--summary', '--work-dir'], false),
   'intent-suppress': command(['--intent-id', '--runtime', '--skill']),
   publish: command(['--accept-publication', '--work-dir'], false),
+  remove: command([
+    '--confirmation-token',
+    '--confirm-exposure',
+    '--confirm-removal',
+    '--intent-policy',
+    '--runtime',
+    '--scope',
+    '--skill',
+    '--source',
+    '--upstream-skill',
+  ]),
   update: command(['--runtime', '--skill']),
   validate: command(['--work-dir'], false),
   'work-order': command(['--work-dir'], false),
@@ -82,6 +95,7 @@ function fail(command, code, message) {
 function parseArguments(arguments_) {
   const [command, ...tokens] = arguments_;
   const options = { scope: 'project' };
+  const provided = new Set();
   const allowedOptions = COMMANDS[command]?.options;
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
@@ -92,6 +106,7 @@ function parseArguments(arguments_) {
     }
     if (BOOLEAN_OPTIONS.has(token)) {
       options[token.slice(2)] = true;
+      provided.add(token);
       continue;
     }
     const value = tokens[index + 1];
@@ -101,9 +116,10 @@ function parseArguments(arguments_) {
       throw error;
     }
     options[token.slice(2)] = value;
+    provided.add(token);
     index += 1;
   }
-  return { command, options };
+  return { command, options, provided };
 }
 
 async function exists(path) {
@@ -156,7 +172,29 @@ async function main() {
       throw error;
     }
 
-    if (parsed.command === 'archaeology') {
+    if (parsed.command === 'remove') {
+      if (!parsed.options.skill || !parsed.provided.has('--scope')) {
+        const error = new Error('remove requires --skill <skill-id> and explicit --scope <project-or-global>.');
+        error.code = 'invalid_arguments';
+        throw error;
+      }
+      const { removeManagedSkill } = await import('./lib/removal.mjs');
+      const data = await removeManagedSkill({
+        repositoryRoot: await findRepositoryRoot(process.cwd()),
+        skill: parsed.options.skill,
+        scope: parsed.options.scope,
+        currentRuntime: parsed.options.runtime,
+        confirmRemoval: parsed.options['confirm-removal'] === true,
+        confirmExposure: parsed.options['confirm-exposure'] === true,
+        confirmationToken: parsed.options['confirmation-token'],
+        intentPolicy: parsed.options['intent-policy'],
+        source: parsed.options.source,
+        upstreamSkill: parsed.options['upstream-skill'],
+        environment: process.env,
+      });
+      const { envelopeStatus = 'complete', ...result } = data;
+      writeEnvelope({ status: envelopeStatus, command: parsed.command, data: result });
+    } else if (parsed.command === 'archaeology') {
       if (!parsed.options.skill) {
         const error = new Error('archaeology requires --skill <skill-id>.');
         error.code = 'invalid_arguments';
@@ -235,6 +273,7 @@ async function main() {
         source: parsed.options.source,
         upstreamSkill: parsed.options['upstream-skill'],
         choice: parsed.options.choice,
+        scope: parsed.options.scope,
         currentRuntime: parsed.options.runtime,
         environment: process.env,
       });

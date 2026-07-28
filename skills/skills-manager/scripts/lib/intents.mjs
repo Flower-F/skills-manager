@@ -317,13 +317,28 @@ export async function resolveSkillIdentity({
   source,
   upstreamSkill,
   choice,
+  scope = 'project',
   currentRuntime,
   environment,
 }) {
   if (!['migrate', 'manage_clean'].includes(choice)) {
     throw intentError('invalid_identity_resolution', 'Identity choice must be migrate or manage_clean.');
   }
-  const state = await readManagedState(repositoryRoot);
+  if (!['project', 'global'].includes(scope)) {
+    throw intentError('unsupported_scope', `Unsupported identity-resolution scope: ${scope}`);
+  }
+  if (scope === 'global' && choice === 'migrate') {
+    throw intentConflict({
+      reason: 'global_identity_migration_requires_project_workflow',
+      choices: ['manage_clean', 'cancel'],
+    });
+  }
+  const stateRoot =
+    scope === 'global' ? await realpath(environment?.HOME || '').catch(() => null) : repositoryRoot;
+  if (!stateRoot) {
+    throw intentError('invalid_identity_resolution', 'Identity-resolution scope root is unavailable.');
+  }
+  const state = await readManagedState(stateRoot);
   const matches = Object.entries(state?.skills || {}).filter(
     ([, entry]) => entry.installName === skill,
   );
@@ -343,10 +358,10 @@ export async function resolveSkillIdentity({
     });
   }
   const [, selectedManaged] = selected[0];
-  await verifyManagedRendering({ repositoryRoot, managed: selectedManaged });
+  await verifyManagedRendering({ repositoryRoot: stateRoot, managed: selectedManaged });
   let selectedLock;
   try {
-    const lock = JSON.parse(await readFile(join(repositoryRoot, 'skills-lock.json'), 'utf8'));
+    const lock = JSON.parse(await readFile(join(stateRoot, 'skills-lock.json'), 'utf8'));
     selectedLock = lock?.skills?.[skill];
   } catch {
     selectedLock = null;
@@ -489,9 +504,9 @@ export async function resolveSkillIdentity({
     ...selectedEntry,
     identity: requested,
   };
-  const rulePath = join(repositoryRoot, '.skills-manager/identity-resolutions.json');
-  const statePath = join(repositoryRoot, '.skills-manager/state.json');
-  await assertContainedStateDirectory(repositoryRoot, join(repositoryRoot, '.skills-manager'));
+  const rulePath = join(stateRoot, '.skills-manager/identity-resolutions.json');
+  const statePath = join(stateRoot, '.skills-manager/state.json');
+  await assertContainedStateDirectory(stateRoot, join(stateRoot, '.skills-manager'));
   const ruleInfo = await lstat(rulePath).catch((error) => {
     if (error?.code === 'ENOENT') return null;
     throw error;

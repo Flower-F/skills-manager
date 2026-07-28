@@ -91,6 +91,34 @@ export async function discoverCandidates({ source, currentRuntime, environment }
   }
 }
 
+export async function removeUpstreamSkill({
+  root,
+  skill,
+  currentRuntime,
+  scope,
+  environment,
+}) {
+  if (!runtimeRegistry(environment).some(({ id }) => id === currentRuntime)) {
+    const error = new Error(`Unsupported runtime: ${currentRuntime}`);
+    error.code = 'unsupported_runtime';
+    throw error;
+  }
+  const executable = environment.SKILLS_MANAGER_NPX_PATH || 'npx';
+  await runProcess(
+    executable,
+    upstreamArguments([
+      'remove',
+      skill,
+      ...(scope === 'global' ? ['--global'] : []),
+      '--agent',
+      currentRuntime,
+      '--yes',
+    ]),
+    { cwd: root, environment },
+  );
+  return { skillsCli: SUPPORTED_SKILLS_CLI_VERSION };
+}
+
 function normalizeRating(value) {
   return typeof value === 'string' ? value.toLowerCase() : null;
 }
