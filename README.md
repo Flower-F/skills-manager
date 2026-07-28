@@ -25,6 +25,8 @@ latest upstream
 
 The previous valid Rendering remains published until the user accepts the candidate. Temporary work is disposable; if it disappears, the workflow downloads and builds again rather than resuming a persistent transaction.
 
+Global and project Intent records are isolated by scope and bound to normalized upstream identity, not installation name. A project Rendering applies their explicit union; a project can suppress an inherited global Intent without rewriting global state. Identity ambiguity or contradictory scoped semantics pauses as a user-visible conflict instead of choosing hidden precedence.
+
 ## Boundaries
 
 - One native Node ESM CLI owns paths, runtime mapping, symlink/copy topology, hashes, upstream lock integration, security gates, and publication.

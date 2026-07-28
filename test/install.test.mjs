@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -1061,7 +1061,9 @@ test('an approved Intent rerenders from latest upstream through work order, resu
     assert.equal(intentRecord.intents[0].state, 'active');
     assert.equal(
       managed.effectiveIntentsHash,
-      createHash('sha256').update(JSON.stringify(intentRecord.intents)).digest('hex'),
+      createHash('sha256')
+        .update(JSON.stringify(intentRecord.intents.map(({ id, text }) => ({ id, text }))))
+        .digest('hex'),
     );
     const calls = (await readFile(fake.calls, 'utf8')).trim().split('\n').map(JSON.parse);
     assert.equal(calls.length, 2);
@@ -1138,10 +1140,19 @@ test('adding another Intent preserves and reapplies the complete Effective-inten
       join(begun.result.data.candidate.root, 'SKILL.md'),
       `---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n${renderedBody}\n`,
     );
+    const resultArguments = ordered.result.data.effectiveIntents.length === 1
+      ? ['--result', 'applied']
+      : [
+          '--results',
+          JSON.stringify(
+            ordered.result.data.effectiveIntents.map(({ id }) => ({ id, status: 'applied' })),
+          ),
+        ];
     const resulted = await runCli(
-      ['intent-result', '--work-dir', begun.result.data.workDir, '--result', 'applied'],
+      ['intent-result', '--work-dir', begun.result.data.workDir, ...resultArguments],
       { cwd: repository, env: {} },
     );
+    assert.equal(resulted.result.status, 'needs_confirmation', JSON.stringify(resulted.result));
     const published = await runCli(
       ['publish', '--work-dir', begun.result.data.workDir, '--accept-publication'],
       { cwd: repository, env: {} },
@@ -1502,7 +1513,7 @@ async function publishOneIntent(repository, fake, audit, intent, body = 'Apply t
       },
     },
   );
-  await runCli(['work-order', '--work-dir', begun.result.data.workDir], {
+  const ordered = await runCli(['work-order', '--work-dir', begun.result.data.workDir], {
     cwd: repository,
     env: {},
   });
@@ -1510,8 +1521,16 @@ async function publishOneIntent(repository, fake, audit, intent, body = 'Apply t
     join(begun.result.data.candidate.root, 'SKILL.md'),
     `---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n${body}\n`,
   );
+  const resultArguments = ordered.result.data.effectiveIntents.length === 1
+    ? ['--result', 'applied']
+    : [
+        '--results',
+        JSON.stringify(
+          ordered.result.data.effectiveIntents.map(({ id }) => ({ id, status: 'applied' })),
+        ),
+      ];
   await runCli(
-    ['intent-result', '--work-dir', begun.result.data.workDir, '--result', 'applied'],
+    ['intent-result', '--work-dir', begun.result.data.workDir, ...resultArguments],
     { cwd: repository, env: {} },
   );
   return runCli(['publish', '--work-dir', begun.result.data.workDir, '--accept-publication'], {
@@ -1817,6 +1836,7 @@ test('an update semantic conflict pauses and an explicitly adapted result can co
       {
         id: byText.get('Never publish automatically.'),
         text: 'Never publish automatically.',
+        scopes: ['project'],
         status: 'failed',
         summary: 'Latest upstream requires automatic publication.',
       },
@@ -1897,7 +1917,7 @@ test('an obsolete update result requires an explicit keep decision before review
       ],
       { cwd: repository, env: {} },
     );
-    assert.equal(obsolete.result.status, 'conflict');
+    assert.equal(obsolete.result.status, 'conflict', JSON.stringify(obsolete.result));
     assert.deepEqual(obsolete.result.data.choices, ['keep', 'mark_obsolete', 'abort']);
     const kept = await runCli(
       ['continue', '--work-dir', updated.result.data.workDir, '--keep-obsolete-intents'],
@@ -2315,6 +2335,1004 @@ test('a failed lifecycle regeneration leaves Intent state and Rendering unchange
       cwd: repository,
       env: {},
     });
+  } finally {
+    await audit.close();
+  }
+});
+
+async function completeScopedIntentOperation({
+  repository,
+  started,
+  body,
+  environment = {},
+  assertSingularRejected = false,
+  singleResult = false,
+}) {
+  assert.equal(started.result.status, 'ready', JSON.stringify(started.result));
+  const ordered = await runCli(['work-order', '--work-dir', started.result.data.workDir], {
+    cwd: repository,
+    env: environment,
+  });
+  assert.equal(ordered.result.status, 'work_order', JSON.stringify(ordered.result));
+  if (assertSingularRejected) {
+    const singular = await runCli(
+      ['intent-result', '--work-dir', started.result.data.workDir, '--result', 'applied'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(singular.result.status, 'failed');
+    assert.equal(singular.result.error.code, 'invalid_agent_result');
+  }
+  await writeFile(
+    join(started.result.data.candidate.root, 'SKILL.md'),
+    `---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n${body}\n`,
+  );
+  const resultArguments = singleResult
+    ? ['--result', 'applied']
+    : [
+        '--results',
+        JSON.stringify(
+          ordered.result.data.effectiveIntents.map(({ id }) => ({ id, status: 'applied' })),
+        ),
+      ];
+  const resulted = await runCli(
+    ['intent-result', '--work-dir', started.result.data.workDir, ...resultArguments],
+    { cwd: repository, env: environment },
+  );
+  assert.equal(
+    resulted.result.status,
+    'needs_confirmation',
+    JSON.stringify({ workDir: started.result.data.workDir, result: resulted.result }),
+  );
+  const published = await runCli(
+    ['publish', '--work-dir', started.result.data.workDir, '--accept-publication'],
+    { cwd: repository, env: environment },
+  );
+  assert.equal(published.result.status, 'complete', JSON.stringify(published.result));
+  return ordered.result.data;
+}
+
+test('global and project Intents form a deterministic union and project suppression is isolated', async () => {
+  const repository = await temporaryDirectory('skills-manager-scoped-intents-');
+  const globalHome = await temporaryDirectory('skills-manager-global-home-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    HOME: globalHome,
+    CODEX_HOME: join(globalHome, '.codex'),
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+  };
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const globalStarted = await runCli(
+      [
+        'intent-add',
+        '--scope',
+        'global',
+        '--skill',
+        'alpha-skill',
+        '--intent',
+        'Include global safety guidance.',
+        '--runtime',
+        'codex',
+      ],
+      { cwd: repository, env: environment },
+    );
+    const globalOrder = await completeScopedIntentOperation({
+      repository,
+      started: globalStarted,
+      body: 'Global safety guidance.',
+      environment,
+      singleResult: true,
+    });
+    const globalId = globalOrder.effectiveIntents[0].id;
+
+    const projectStarted = await runCli(
+      [
+        'intent-add',
+        '--scope',
+        'project',
+        '--skill',
+        'alpha-skill',
+        '--intent',
+        'Prefer concise project examples.',
+        '--runtime',
+        'codex',
+      ],
+      { cwd: repository, env: environment },
+    );
+    const projectOrder = await completeScopedIntentOperation({
+      repository,
+      started: projectStarted,
+      body: 'Global safety guidance.\n\nConcise project examples.',
+      environment,
+      assertSingularRejected: true,
+    });
+    assert.deepEqual(
+      projectOrder.effectiveIntents.map(({ text, scopes }) => ({ text, scopes })),
+      [
+        { text: 'Include global safety guidance.', scopes: ['global'] },
+        { text: 'Prefer concise project examples.', scopes: ['project'] },
+      ],
+    );
+
+    const globalFiles = await readdir(join(globalHome, '.skills-manager/intents'));
+    assert.equal(globalFiles.length, 1);
+    const globalPath = join(globalHome, '.skills-manager/intents', globalFiles[0]);
+    const globalBeforeSuppression = await readFile(globalPath, 'utf8');
+    const listedBefore = await runCli(['intent-list', '--skill', 'alpha-skill'], {
+      cwd: repository,
+      env: { HOME: globalHome },
+    });
+    assert.deepEqual(listedBefore.result.data.effectiveIntentIds, [
+      globalId,
+      projectOrder.effectiveIntents[1].id,
+    ]);
+
+    const suppressed = await runCli(
+      [
+        'intent-suppress',
+        '--skill',
+        'alpha-skill',
+        '--intent-id',
+        globalId,
+        '--runtime',
+        'codex',
+      ],
+      { cwd: repository, env: environment },
+    );
+    await completeScopedIntentOperation({
+      repository,
+      started: suppressed,
+      body: 'Concise project examples.',
+      environment,
+    });
+    assert.equal(await readFile(globalPath, 'utf8'), globalBeforeSuppression);
+    const listedAfter = await runCli(['intent-list', '--skill', 'alpha-skill'], {
+      cwd: repository,
+      env: { HOME: globalHome },
+    });
+    assert.deepEqual(listedAfter.result.data.effectiveIntentIds, [
+      projectOrder.effectiveIntents[1].id,
+    ]);
+    assert.deepEqual(listedAfter.result.data.scopes.project.suppressedGlobalIntentIds, [globalId]);
+    const projectFiles = await readdir(join(repository, '.skills-manager/intents'));
+    const projectPath = join(repository, '.skills-manager/intents', projectFiles[0]);
+    const projectBeforeGlobalMutation = await readFile(projectPath, 'utf8');
+    const stateBeforeGlobalMutation = JSON.parse(
+      await readFile(join(repository, '.skills-manager/state.json'), 'utf8'),
+    );
+    const [managedBeforeGlobalMutation] = Object.values(stateBeforeGlobalMutation.skills);
+    const disabled = await runCli(
+      [
+        'intent-disable',
+        '--scope',
+        'global',
+        '--skill',
+        'alpha-skill',
+        '--intent-id',
+        globalId,
+        '--runtime',
+        'codex',
+      ],
+      { cwd: repository, env: environment },
+    );
+    await completeScopedIntentOperation({
+      repository,
+      started: disabled,
+      body: 'Concise project examples.',
+      environment,
+    });
+    assert.equal(await readFile(projectPath, 'utf8'), projectBeforeGlobalMutation);
+    const globalAfterMutation = JSON.parse(await readFile(globalPath, 'utf8'));
+    assert.equal(globalAfterMutation.intents[0].state, 'disabled');
+    const stateAfterGlobalMutation = JSON.parse(
+      await readFile(join(repository, '.skills-manager/state.json'), 'utf8'),
+    );
+    const [managedAfterGlobalMutation] = Object.values(stateAfterGlobalMutation.skills);
+    assert.equal(
+      managedAfterGlobalMutation.effectiveIntentsHash,
+      managedBeforeGlobalMutation.effectiveIntentsHash,
+      'non-effective global state changes must not change the semantic Effective-Intent hash',
+    );
+  } finally {
+    await audit.close();
+  }
+});
+
+test('the same Intent id with different scoped semantics returns both competing interpretations', async () => {
+  const repository = await temporaryDirectory('skills-manager-scoped-collision-');
+  const globalHome = await temporaryDirectory('skills-manager-global-home-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    HOME: globalHome,
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+  };
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const state = JSON.parse(await readFile(join(repository, '.skills-manager/state.json'), 'utf8'));
+    const [managed] = Object.values(state.skills);
+    const hash = createHash('sha256')
+      .update(managed.identity.source)
+      .update('\0')
+      .update(managed.identity.skill)
+      .digest('hex')
+      .slice(0, 8);
+    const filename = `alpha-skill__${hash}.json`;
+    await mkdir(join(repository, '.skills-manager/intents'), { recursive: true });
+    await mkdir(join(globalHome, '.skills-manager/intents'), { recursive: true });
+    const base = { version: 1, identity: managed.identity, installName: 'alpha-skill' };
+    await writeFile(
+      join(repository, '.skills-manager/intents', filename),
+      `${JSON.stringify({ ...base, intents: [{ id: 'shared', text: 'Use project wording.', state: 'active' }] }, null, 2)}\n`,
+    );
+    await writeFile(
+      join(globalHome, '.skills-manager/intents', filename),
+      `${JSON.stringify({ ...base, intents: [{ id: 'shared', text: 'Use global wording.', state: 'active' }] }, null, 2)}\n`,
+    );
+    const listed = await runCli(['intent-list', '--skill', 'alpha-skill'], {
+      cwd: repository,
+      env: { HOME: globalHome },
+    });
+    assert.equal(listed.result.status, 'conflict');
+    assert.equal(listed.result.data.reason, 'scoped_intent_collision');
+    assert.deepEqual(
+      listed.result.data.interpretations.map(({ scope, text }) => ({ scope, text })),
+      [
+        { scope: 'global', text: 'Use global wording.' },
+        { scope: 'project', text: 'Use project wording.' },
+      ],
+    );
+    assert.deepEqual(listed.result.data.choices, ['edit_project', 'suppress_global', 'cancel']);
+
+    const edited = await runCli(
+      [
+        'intent-edit',
+        '--scope',
+        'project',
+        '--skill',
+        'alpha-skill',
+        '--intent-id',
+        'shared',
+        '--intent',
+        'Use global wording.',
+        '--runtime',
+        'codex',
+      ],
+      { cwd: repository, env: environment },
+    );
+    await completeScopedIntentOperation({
+      repository,
+      started: edited,
+      body: 'Use global wording.',
+      environment,
+    });
+    const resolvedByEdit = await runCli(['intent-list', '--skill', 'alpha-skill'], {
+      cwd: repository,
+      env: { HOME: globalHome },
+    });
+    assert.deepEqual(resolvedByEdit.result.data.effectiveIntents[0].scopes, [
+      'global',
+      'project',
+    ]);
+
+    await writeFile(
+      join(repository, '.skills-manager/intents', filename),
+      `${JSON.stringify({ ...base, intents: [{ id: 'shared', text: 'Use project wording.', state: 'active' }] }, null, 2)}\n`,
+    );
+    const globalBeforeSuppression = await readFile(
+      join(globalHome, '.skills-manager/intents', filename),
+      'utf8',
+    );
+    const suppressed = await runCli(
+      [
+        'intent-suppress',
+        '--skill',
+        'alpha-skill',
+        '--intent-id',
+        'shared',
+        '--runtime',
+        'codex',
+      ],
+      { cwd: repository, env: environment },
+    );
+    await completeScopedIntentOperation({
+      repository,
+      started: suppressed,
+      body: 'Use project wording.',
+      environment,
+    });
+    assert.equal(
+      await readFile(join(globalHome, '.skills-manager/intents', filename), 'utf8'),
+      globalBeforeSuppression,
+    );
+    const resolvedBySuppression = await runCli(['intent-list', '--skill', 'alpha-skill'], {
+      cwd: repository,
+      env: { HOME: globalHome },
+    });
+    assert.deepEqual(resolvedBySuppression.result.data.effectiveIntentIds, ['shared']);
+    assert.deepEqual(
+      resolvedBySuppression.result.data.scopes.project.suppressedGlobalIntentIds,
+      ['shared'],
+    );
+  } finally {
+    await audit.close();
+  }
+});
+
+test('same-named global Intent records from another source identity are not inherited', async () => {
+  const repository = await temporaryDirectory('skills-manager-scoped-identity-');
+  const globalHome = await temporaryDirectory('skills-manager-global-home-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const unrelatedIdentity = { source: 'another/skills', skill: 'skills/alpha-skill/SKILL.md' };
+    const hash = createHash('sha256')
+      .update(unrelatedIdentity.source)
+      .update('\0')
+      .update(unrelatedIdentity.skill)
+      .digest('hex')
+      .slice(0, 8);
+    await mkdir(join(globalHome, '.skills-manager/intents'), { recursive: true });
+    await writeFile(
+      join(globalHome, '.skills-manager/intents', `alpha-skill__${hash}.json`),
+      `${JSON.stringify({
+        version: 1,
+        identity: unrelatedIdentity,
+        installName: 'alpha-skill',
+        intents: [{ id: 'unrelated', text: 'Do not inherit me.', state: 'active' }],
+      }, null, 2)}\n`,
+    );
+    const listed = await runCli(['intent-list', '--skill', 'alpha-skill'], {
+      cwd: repository,
+      env: { HOME: globalHome },
+    });
+    assert.equal(listed.result.status, 'ready');
+    assert.deepEqual(listed.result.data.effectiveIntentIds, []);
+    assert.deepEqual(listed.result.data.scopes.global.intents, []);
+  } finally {
+    await audit.close();
+  }
+});
+
+test('ambiguous managed identities and global-only installations require explicit resolution', async () => {
+  const repository = await temporaryDirectory('skills-manager-ambiguous-identity-');
+  const globalHome = await temporaryDirectory('skills-manager-global-home-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const statePath = join(repository, '.skills-manager/state.json');
+    const state = JSON.parse(await readFile(statePath, 'utf8'));
+    const [managed] = Object.values(state.skills);
+    state.skills.ambiguous = {
+      ...managed,
+      identity: { source: 'EXAMPLE/SKILLS/', skill: managed.identity.skill },
+    };
+    await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+    const ambiguous = await runCli(['intent-list', '--skill', 'alpha-skill'], {
+      cwd: repository,
+      env: { HOME: globalHome },
+    });
+    assert.equal(ambiguous.result.status, 'conflict');
+    assert.equal(ambiguous.result.data.reason, 'ambiguous_skill_identity');
+    assert.equal(ambiguous.result.data.identities.length, 2);
+    assert.deepEqual(ambiguous.result.data.identities[0], ambiguous.result.data.identities[1]);
+    assert.deepEqual(ambiguous.result.data.choices, ['migrate', 'manage_clean', 'cancel']);
+    await writeFile(
+      join(repository, '.skills-manager/identity-resolutions.json'),
+      `${JSON.stringify({
+        version: 1,
+        rules: {
+          beta: {
+            identity: { source: 'example/skills', skill: 'skills/beta/SKILL.md' },
+            choice: 'manage_clean',
+            competingIdentities: [],
+          },
+        },
+      }, null, 2)}\n`,
+    );
+    const resolvedIdentity = await runCli(
+      [
+        'identity-resolve',
+        '--skill',
+        'alpha-skill',
+        '--source',
+        'example/skills',
+        '--upstream-skill',
+        managed.identity.skill,
+        '--choice',
+        'manage_clean',
+      ],
+      { cwd: repository, env: { HOME: globalHome } },
+    );
+    assert.equal(resolvedIdentity.result.status, 'complete');
+    const identityRule = JSON.parse(
+      await readFile(join(repository, '.skills-manager/identity-resolutions.json'), 'utf8'),
+    );
+    assert.equal(identityRule.rules['alpha-skill'].choice, 'manage_clean');
+    assert.equal(identityRule.rules.beta.choice, 'manage_clean');
+    const resolvedList = await runCli(['intent-list', '--skill', 'alpha-skill'], {
+      cwd: repository,
+      env: { HOME: globalHome },
+    });
+    assert.equal(resolvedList.result.status, 'ready');
+
+    managed.scope = 'global';
+    managed.physicalTargets = ['.codex/skills/alpha-skill'];
+    managed.topologyLinks = [];
+    state.skills = { [Object.keys(state.skills)[0]]: managed };
+    await mkdir(join(globalHome, '.skills-manager'), { recursive: true });
+    await writeFile(
+      join(globalHome, '.skills-manager/state.json'),
+      `${JSON.stringify(state, null, 2)}\n`,
+    );
+    await mkdir(join(globalHome, '.codex/skills'), { recursive: true });
+    await cp(
+      join(repository, '.agents/skills/alpha-skill'),
+      join(globalHome, '.codex/skills/alpha-skill'),
+      { recursive: true },
+    );
+    await rm(statePath);
+    const globalOnly = await runCli(
+      [
+        'intent-add',
+        '--scope',
+        'project',
+        '--skill',
+        'alpha-skill',
+        '--intent',
+        'Require a project Rendering.',
+        '--runtime',
+        'codex',
+      ],
+      { cwd: repository, env: { HOME: globalHome } },
+    );
+    assert.equal(globalOnly.result.status, 'conflict');
+    assert.equal(globalOnly.result.data.reason, 'project_rendering_required');
+    assert.deepEqual(globalOnly.result.data.choices, [
+      'create_project_rendering',
+      'promote_to_global',
+      'cancel',
+    ]);
+    assert.deepEqual(globalOnly.result.data.resolutions.create_project_rendering, {
+      command: 'assess',
+      options: { source: 'example/skills', skill: 'alpha-skill', scope: 'project' },
+    });
+    assert.deepEqual(globalOnly.result.data.resolutions.promote_to_global, {
+      command: 'intent-add',
+      options: { skill: 'alpha-skill', scope: 'global' },
+    });
+    const promoted = await runCli(
+      [
+        'intent-add',
+        '--scope',
+        'global',
+        '--skill',
+        'alpha-skill',
+        '--intent',
+        'Promote this global outcome.',
+        '--runtime',
+        'codex',
+      ],
+      {
+        cwd: repository,
+        env: {
+          HOME: globalHome,
+          CODEX_HOME: join(globalHome, '.codex'),
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+        },
+      },
+    );
+    await completeScopedIntentOperation({
+      repository,
+      started: promoted,
+      body: 'Promoted global outcome.',
+      environment: { HOME: globalHome, CODEX_HOME: join(globalHome, '.codex') },
+      singleResult: true,
+    });
+    const globalState = JSON.parse(
+      await readFile(join(globalHome, '.skills-manager/state.json'), 'utf8'),
+    );
+    assert.equal(Object.values(globalState.skills)[0].scope, 'global');
+    assert.deepEqual(Object.values(globalState.skills)[0].physicalTargets, [
+      '.codex/skills/alpha-skill',
+    ]);
+    assert.match(
+      await readFile(join(globalHome, '.codex/skills/alpha-skill/SKILL.md'), 'utf8'),
+      /Promoted global outcome/,
+    );
+    assert.equal(
+      (
+        await readdir(join(globalHome, '.skills-manager/intents'))
+      ).length,
+      1,
+    );
+    const globalListed = await runCli(['intent-list', '--skill', 'alpha-skill'], {
+      cwd: repository,
+      env: { HOME: globalHome },
+    });
+    const promotedId = globalListed.result.data.effectiveIntentIds[0];
+    assert.equal(globalListed.result.data.scope, 'global');
+    const disabledGlobalOnly = await runCli(
+      [
+        'intent-disable',
+        '--scope',
+        'global',
+        '--skill',
+        'alpha-skill',
+        '--intent-id',
+        promotedId,
+        '--runtime',
+        'codex',
+      ],
+      {
+        cwd: repository,
+        env: {
+          HOME: globalHome,
+          CODEX_HOME: join(globalHome, '.codex'),
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+        },
+      },
+    );
+    assert.equal(disabledGlobalOnly.result.status, 'needs_confirmation');
+    const disabledPublished = await runCli(
+      ['publish', '--work-dir', disabledGlobalOnly.result.data.workDir, '--accept-publication'],
+      {
+        cwd: repository,
+        env: { HOME: globalHome, CODEX_HOME: join(globalHome, '.codex') },
+      },
+    );
+    assert.equal(disabledPublished.result.status, 'complete', JSON.stringify(disabledPublished.result));
+    const listedDisabled = await runCli(['intent-list', '--skill', 'alpha-skill'], {
+      cwd: repository,
+      env: { HOME: globalHome },
+    });
+    assert.deepEqual(listedDisabled.result.data.effectiveIntentIds, []);
+    assert.equal(listedDisabled.result.data.scopes.global.intents[0].state, 'disabled');
+  } finally {
+    await audit.close();
+  }
+});
+
+test('semantic conflicts preserve the global and project interpretations for user resolution', async () => {
+  const repository = await temporaryDirectory('skills-manager-scoped-semantic-conflict-');
+  const globalHome = await temporaryDirectory('skills-manager-global-home-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    HOME: globalHome,
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+  };
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const state = JSON.parse(await readFile(join(repository, '.skills-manager/state.json'), 'utf8'));
+    const [managed] = Object.values(state.skills);
+    const hash = createHash('sha256')
+      .update(managed.identity.source)
+      .update('\0')
+      .update(managed.identity.skill)
+      .digest('hex')
+      .slice(0, 8);
+    const filename = `alpha-skill__${hash}.json`;
+    const base = { version: 1, identity: managed.identity, installName: 'alpha-skill' };
+    await mkdir(join(repository, '.skills-manager/intents'), { recursive: true });
+    await mkdir(join(globalHome, '.skills-manager/intents'), { recursive: true });
+    await writeFile(
+      join(globalHome, '.skills-manager/intents', filename),
+      `${JSON.stringify({ ...base, intents: [{ id: 'global-rule', text: 'Always publish.', state: 'active' }] }, null, 2)}\n`,
+    );
+    await writeFile(
+      join(repository, '.skills-manager/intents', filename),
+      `${JSON.stringify({ ...base, intents: [{ id: 'project-rule', text: 'Never publish.', state: 'active' }] }, null, 2)}\n`,
+    );
+    const started = await runCli(
+      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      { cwd: repository, env: environment },
+    );
+    const ordered = await runCli(['work-order', '--work-dir', started.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    const conflict = await runCli(
+      [
+        'intent-result',
+        '--work-dir',
+        started.result.data.workDir,
+        '--results',
+        JSON.stringify(
+          ordered.result.data.effectiveIntents.map(({ id }) => ({
+            id,
+            status: 'failed',
+            summary: 'These semantic outcomes contradict.',
+          })),
+        ),
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(conflict.result.status, 'conflict');
+    assert.equal(conflict.result.data.reason, 'intent_failed');
+    assert.deepEqual(
+      conflict.result.data.intents.map(({ id, scopes }) => ({ id, scopes })),
+      [
+        { id: 'global-rule', scopes: ['global'] },
+        { id: 'project-rule', scopes: ['project'] },
+      ],
+    );
+  } finally {
+    await audit.close();
+  }
+});
+
+test('marking an inherited global Intent obsolete updates its owner without losing other scopes', async () => {
+  const repository = await temporaryDirectory('skills-manager-global-obsolete-');
+  const globalHome = await temporaryDirectory('skills-manager-global-home-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    HOME: globalHome,
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+  };
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const globalStarted = await runCli(
+      [
+        'intent-add',
+        '--scope',
+        'global',
+        '--skill',
+        'alpha-skill',
+        '--intent',
+        'Retire me when upstream covers this.',
+        '--runtime',
+        'codex',
+      ],
+      { cwd: repository, env: environment },
+    );
+    const globalOrder = await completeScopedIntentOperation({
+      repository,
+      started: globalStarted,
+      body: 'Global behavior.',
+      environment,
+      singleResult: true,
+    });
+    const globalId = globalOrder.effectiveIntents[0].id;
+    const projectFilesBefore = await readdir(join(repository, '.skills-manager/intents')).catch(
+      () => [],
+    );
+
+    const updated = await runCli(['update', '--skill', 'alpha-skill', '--runtime', 'codex'], {
+      cwd: repository,
+      env: {
+        ...environment,
+        FAKE_UPSTREAM_SKILL_CONTENT:
+          '---\nname: alpha-skill\ndescription: Updated candidate.\n---\n\n# Updated\n',
+      },
+    });
+    const ordered = await runCli(['work-order', '--work-dir', updated.result.data.workDir], {
+      cwd: repository,
+      env: environment,
+    });
+    const obsolete = await runCli(
+      [
+        'intent-result',
+        '--work-dir',
+        updated.result.data.workDir,
+        '--results',
+        JSON.stringify([
+          {
+            id: globalId,
+            status: 'obsolete',
+            summary: 'Latest upstream now provides this behavior.',
+          },
+        ]),
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(obsolete.result.status, 'conflict', JSON.stringify(obsolete.result));
+    assert.deepEqual(obsolete.result.data.intents[0].scopes, ['global']);
+    const marked = await runCli(
+      ['continue', '--work-dir', updated.result.data.workDir, '--mark-obsolete-intents'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(marked.result.status, 'work_order', JSON.stringify(marked.result));
+    assert.deepEqual(marked.result.data.effectiveIntents, []);
+    const reviewed = await runCli(
+      ['intent-result', '--work-dir', updated.result.data.workDir, '--results', '[]'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(reviewed.result.status, 'needs_confirmation', JSON.stringify(reviewed.result));
+    const published = await runCli(
+      ['publish', '--work-dir', updated.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(published.result.status, 'complete', JSON.stringify(published.result));
+    const globalFiles = await readdir(join(globalHome, '.skills-manager/intents'));
+    const globalRecord = JSON.parse(
+      await readFile(join(globalHome, '.skills-manager/intents', globalFiles[0]), 'utf8'),
+    );
+    assert.equal(globalRecord.intents[0].state, 'expired');
+    assert.equal(
+      globalRecord.intents[0].obsoleteReason,
+      'Latest upstream now provides this behavior.',
+    );
+    assert.deepEqual(
+      await readdir(join(repository, '.skills-manager/intents')).catch(() => []),
+      projectFilesBefore,
+    );
+    assert.equal(ordered.result.data.effectiveIntents[0].id, globalId);
+  } finally {
+    await audit.close();
+  }
+});
+
+test('global Intent publication rejects manifest root tampering and external state links', async () => {
+  const repository = await temporaryDirectory('skills-manager-global-intent-security-');
+  const globalHome = await temporaryDirectory('skills-manager-global-home-');
+  const external = await temporaryDirectory('skills-manager-external-global-intents-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    HOME: globalHome,
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+  };
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const started = await runCli(
+      [
+        'intent-add',
+        '--scope',
+        'global',
+        '--skill',
+        'alpha-skill',
+        '--intent',
+        'Keep state contained.',
+        '--runtime',
+        'codex',
+      ],
+      { cwd: repository, env: environment },
+    );
+    await runCli(['work-order', '--work-dir', started.result.data.workDir], {
+      cwd: repository,
+      env: environment,
+    });
+    await writeFile(
+      join(started.result.data.candidate.root, 'SKILL.md'),
+      '---\nname: alpha-skill\ndescription: Candidate description.\n---\n\nContained.\n',
+    );
+    await runCli(
+      ['intent-result', '--work-dir', started.result.data.workDir, '--result', 'applied'],
+      { cwd: repository, env: environment },
+    );
+    const manifestPath = join(started.result.data.workDir, 'skills-manager-attempt.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    manifest.candidateIntentStates[0].scopeRoot = external;
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    const tampered = await runCli(
+      ['publish', '--work-dir', started.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(tampered.result.status, 'failed');
+    assert.equal(tampered.result.error.code, 'invalid_intent_state');
+    assert.deepEqual(await readdir(external), []);
+
+    await rm(started.result.data.workDir, { recursive: true, force: true });
+    await mkdir(join(globalHome, '.skills-manager'), { recursive: true });
+    await symlink(external, join(globalHome, '.skills-manager/intents'), 'dir');
+    const linked = await runCli(
+      [
+        'intent-add',
+        '--scope',
+        'global',
+        '--skill',
+        'alpha-skill',
+        '--intent',
+        'Reject linked state.',
+        '--runtime',
+        'codex',
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(linked.result.status, 'failed');
+    assert.equal(linked.result.error.code, 'invalid_publication_target');
+    assert.deepEqual(await readdir(external), []);
+  } finally {
+    await audit.close();
+  }
+});
+
+test('identity migration rebinds Intents through semantic rendering and reviewed publication', async () => {
+  const repository = await temporaryDirectory('skills-manager-identity-migration-');
+  const globalHome = await temporaryDirectory('skills-manager-global-home-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    HOME: globalHome,
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+  };
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const statePath = join(repository, '.skills-manager/state.json');
+    const state = JSON.parse(await readFile(statePath, 'utf8'));
+    const [selectedKey, selectedManaged] = Object.entries(state.skills)[0];
+    const oldIdentity = { source: 'legacy/skills', skill: selectedManaged.identity.skill };
+    state.skills.legacy = { ...selectedManaged, identity: oldIdentity };
+    await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+    const oldHash = createHash('sha256')
+      .update(oldIdentity.source)
+      .update('\0')
+      .update(oldIdentity.skill)
+      .digest('hex')
+      .slice(0, 8);
+    await mkdir(join(repository, '.skills-manager/intents'), { recursive: true });
+    await writeFile(
+      join(repository, '.skills-manager/intents', `alpha-skill__${oldHash}.json`),
+      `${JSON.stringify({
+        version: 1,
+        identity: oldIdentity,
+        installName: 'alpha-skill',
+        intents: [{ id: 'legacy-rule', text: 'Preserve migrated guidance.', state: 'active' }],
+      }, null, 2)}\n`,
+    );
+    const selectedHash = createHash('sha256')
+      .update(selectedManaged.identity.source)
+      .update('\0')
+      .update(selectedManaged.identity.skill)
+      .digest('hex')
+      .slice(0, 8);
+    const selectedIntentPath = join(
+      repository,
+      '.skills-manager/intents',
+      `alpha-skill__${selectedHash}.json`,
+    );
+    await writeFile(
+      selectedIntentPath,
+      `${JSON.stringify({
+        version: 1,
+        identity: selectedManaged.identity,
+        installName: 'alpha-skill',
+        intents: [{ id: 'legacy-rule', text: 'Preserve migrated guidance.', state: 'disabled' }],
+      }, null, 2)}\n`,
+    );
+    const conflictingMigration = await runCli(
+      [
+        'identity-resolve',
+        '--skill',
+        'alpha-skill',
+        '--source',
+        selectedManaged.identity.source,
+        '--upstream-skill',
+        selectedManaged.identity.skill,
+        '--choice',
+        'migrate',
+        '--runtime',
+        'codex',
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(conflictingMigration.result.status, 'conflict');
+    assert.equal(
+      conflictingMigration.result.data.reason,
+      'identity_migration_intent_collision',
+    );
+    await writeFile(
+      selectedIntentPath,
+      `${JSON.stringify({
+        version: 1,
+        identity: selectedManaged.identity,
+        installName: 'alpha-skill',
+        intents: [{ id: 'legacy-rule', text: 'Preserve migrated guidance.', state: 'active' }],
+      }, null, 2)}\n`,
+    );
+    const migrated = await runCli(
+      [
+        'identity-resolve',
+        '--skill',
+        'alpha-skill',
+        '--source',
+        selectedManaged.identity.source,
+        '--upstream-skill',
+        selectedManaged.identity.skill,
+        '--choice',
+        'migrate',
+        '--runtime',
+        'codex',
+      ],
+      { cwd: repository, env: environment },
+    );
+    const order = await completeScopedIntentOperation({
+      repository,
+      started: migrated,
+      body: 'Preserve migrated guidance.',
+      environment,
+    });
+    assert.deepEqual(order.effectiveIntents.map(({ id }) => id), ['legacy-rule']);
+    const migratedState = JSON.parse(await readFile(statePath, 'utf8'));
+    assert.deepEqual(Object.keys(migratedState.skills), [selectedKey]);
+    const migratedRecord = JSON.parse(
+      await readFile(
+        join(repository, '.skills-manager/intents', `alpha-skill__${selectedHash}.json`),
+        'utf8',
+      ),
+    );
+    assert.equal(migratedRecord.intents[0].id, 'legacy-rule');
+    await assert.rejects(
+      lstat(join(repository, '.skills-manager/intents', `alpha-skill__${oldHash}.json`)),
+      { code: 'ENOENT' },
+    );
+    const rules = JSON.parse(
+      await readFile(join(repository, '.skills-manager/identity-resolutions.json'), 'utf8'),
+    );
+    assert.equal(rules.rules['alpha-skill'].choice, 'migrate');
+  } finally {
+    await audit.close();
+  }
+});
+
+test('an ordinary Update cannot be tampered into an identity migration', async () => {
+  const repository = await temporaryDirectory('skills-manager-identity-tamper-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+    FAKE_UPSTREAM_SKILL_CONTENT:
+      '---\nname: alpha-skill\ndescription: Updated candidate.\n---\n\n# Updated\n',
+  };
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const updated = await runCli(['update', '--skill', 'alpha-skill', '--runtime', 'codex'], {
+      cwd: repository,
+      env: environment,
+    });
+    assert.equal(updated.result.status, 'needs_confirmation', JSON.stringify(updated.result));
+    const statePath = join(repository, '.skills-manager/state.json');
+    const state = JSON.parse(await readFile(statePath, 'utf8'));
+    const [managed] = Object.values(state.skills);
+    state.skills.competing = {
+      ...managed,
+      identity: { source: 'competing/skills', skill: managed.identity.skill },
+    };
+    await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+    const manifestPath = join(updated.result.data.workDir, 'skills-manager-attempt.json');
+    const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+    manifest.operation.identityResolution = {};
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+    const published = await runCli(
+      ['publish', '--work-dir', updated.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(published.result.status, 'failed');
+    assert.equal(published.result.error.code, 'invalid_identity_resolution');
+    const unchanged = JSON.parse(await readFile(statePath, 'utf8'));
+    assert.equal(Object.keys(unchanged.skills).length, 2);
   } finally {
     await audit.close();
   }

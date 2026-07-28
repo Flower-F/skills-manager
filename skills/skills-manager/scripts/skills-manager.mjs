@@ -8,11 +8,11 @@ import { fileURLToPath } from 'node:url';
 const ENVELOPE_VERSION = 1;
 const MINIMUM_NODE_MAJOR = 22;
 const INTENT_MUTATION_OPTIONS = {
-  'intent-delete': new Set(['--confirm-delete', '--intent-id', '--runtime', '--skill']),
-  'intent-disable': new Set(['--intent-id', '--runtime', '--skill']),
-  'intent-edit': new Set(['--intent', '--intent-id', '--runtime', '--skill']),
-  'intent-enable': new Set(['--intent-id', '--runtime', '--skill']),
-  'intent-obsolete': new Set(['--intent-id', '--reason', '--runtime', '--skill']),
+  'intent-delete': new Set(['--confirm-delete', '--intent-id', '--runtime', '--scope', '--skill']),
+  'intent-disable': new Set(['--intent-id', '--runtime', '--scope', '--skill']),
+  'intent-edit': new Set(['--intent', '--intent-id', '--runtime', '--scope', '--skill']),
+  'intent-enable': new Set(['--intent-id', '--runtime', '--scope', '--skill']),
+  'intent-obsolete': new Set(['--intent-id', '--reason', '--runtime', '--scope', '--skill']),
 };
 const INTENT_MUTATION_COMMANDS = Object.keys(INTENT_MUTATION_OPTIONS);
 const INTENT_MUTATION_OPERATION_TYPES = INTENT_MUTATION_COMMANDS.map((command) =>
@@ -32,8 +32,10 @@ const COMMAND_OPTIONS = {
   ]),
   discover: new Set(['--runtime', '--source']),
   inspect: new Set(['--runtime', '--scope']),
-  'intent-add': new Set(['--intent', '--runtime', '--skill']),
+  'identity-resolve': new Set(['--choice', '--runtime', '--skill', '--source', '--upstream-skill']),
+  'intent-add': new Set(['--intent', '--runtime', '--scope', '--skill']),
   'intent-list': new Set(['--skill']),
+  'intent-suppress': new Set(['--intent-id', '--runtime', '--skill']),
   'intent-result': new Set(['--result', '--results', '--summary', '--work-dir']),
   publish: new Set(['--accept-publication', '--work-dir']),
   update: new Set(['--runtime', '--skill']),
@@ -125,10 +127,12 @@ async function main() {
     if (
       ![
         'inspect',
+        'identity-resolve',
         'discover',
         'assess',
         'intent-add',
         'intent-list',
+        'intent-suppress',
         ...INTENT_MUTATION_COMMANDS,
         'work-order',
         'intent-result',
@@ -152,6 +156,7 @@ async function main() {
         'work-order',
         'intent-result',
         'intent-list',
+        'identity-resolve',
       ].includes(
         parsed.command,
       ) &&
@@ -167,7 +172,39 @@ async function main() {
       throw error;
     }
 
-    if (parsed.command === 'work-order') {
+    if (parsed.command === 'identity-resolve') {
+      if (
+        !parsed.options.skill ||
+        !parsed.options.source ||
+        !parsed.options['upstream-skill'] ||
+        !parsed.options.choice
+      ) {
+        const error = new Error(
+          'identity-resolve requires --skill, --source, --upstream-skill, and --choice.',
+        );
+        error.code = 'invalid_arguments';
+        throw error;
+      }
+      const { resolveSkillIdentity } = await import('./lib/intents.mjs');
+      const data = await resolveSkillIdentity({
+        repositoryRoot: await findRepositoryRoot(process.cwd()),
+        skill: parsed.options.skill,
+        source: parsed.options.source,
+        upstreamSkill: parsed.options['upstream-skill'],
+        choice: parsed.options.choice,
+        currentRuntime: parsed.options.runtime,
+        environment: process.env,
+      });
+      const {
+        envelopeStatus = data.workDir
+          ? data.security?.decision === 'approved'
+            ? 'ready'
+            : 'needs_confirmation'
+          : 'complete',
+        ...result
+      } = data;
+      writeEnvelope({ status: envelopeStatus, command: parsed.command, data: result });
+    } else if (parsed.command === 'work-order') {
       if (!parsed.options['work-dir']) {
         const error = new Error('work-order requires --work-dir <path>.');
         error.code = 'invalid_arguments';
@@ -270,7 +307,8 @@ async function main() {
         });
         if (
           data.operation?.type === 'update' ||
-          INTENT_MUTATION_OPERATION_TYPES.includes(data.operation?.type)
+          INTENT_MUTATION_OPERATION_TYPES.includes(data.operation?.type) ||
+          ['intent_suppress', 'identity_migrate'].includes(data.operation?.type)
         ) {
           const { prepareUpdateAttempt } = await import('./lib/intents.mjs');
           data = await prepareUpdateAttempt({ workDir: parsed.options['work-dir'] });
@@ -288,8 +326,28 @@ async function main() {
       const data = await listIntents({
         repositoryRoot: await findRepositoryRoot(process.cwd()),
         skill: parsed.options.skill,
+        environment: process.env,
       });
       writeEnvelope({ status: 'ready', command: 'intent-list', data });
+    } else if (parsed.command === 'intent-suppress') {
+      if (!parsed.options.skill || !parsed.options['intent-id']) {
+        const error = new Error('intent-suppress requires --skill <skill-id> and --intent-id <id>.');
+        error.code = 'invalid_arguments';
+        throw error;
+      }
+      const { beginIntentSuppression } = await import('./lib/intents.mjs');
+      const data = await beginIntentSuppression({
+        repositoryRoot: await findRepositoryRoot(process.cwd()),
+        skill: parsed.options.skill,
+        intentId: parsed.options['intent-id'],
+        currentRuntime: parsed.options.runtime,
+        environment: process.env,
+      });
+      const {
+        envelopeStatus = data.security?.decision === 'approved' ? 'ready' : 'needs_confirmation',
+        ...result
+      } = data;
+      writeEnvelope({ status: envelopeStatus, command: parsed.command, data: result });
     } else if (
       INTENT_MUTATION_COMMANDS.includes(parsed.command)
     ) {
@@ -309,6 +367,7 @@ async function main() {
         skill: parsed.options.skill,
         intentId: parsed.options['intent-id'],
         mutation: parsed.command.slice('intent-'.length),
+        scope: parsed.options.scope,
         text: parsed.options.intent,
         reason: parsed.options.reason,
         confirmDelete: parsed.options['confirm-delete'] === true,
@@ -349,6 +408,7 @@ async function main() {
         repositoryRoot: await findRepositoryRoot(process.cwd()),
         skill: parsed.options.skill,
         text: parsed.options.intent,
+        scope: parsed.options.scope,
         currentRuntime: parsed.options.runtime,
         environment: process.env,
       });
