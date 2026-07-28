@@ -247,7 +247,16 @@ export async function loadManifest(workDir) {
   return { manifest, resolvedWorkDir };
 }
 
-export async function assessCandidate({ source, skill, currentRuntime, scope, repositoryRoot, environment }) {
+export async function assessCandidate({
+  source,
+  skill,
+  currentRuntime,
+  scope,
+  repositoryRoot,
+  operationType = 'install',
+  operationDetails = {},
+  environment,
+}) {
   const runtime = runtimeRegistry(environment).find(({ id }) => id === currentRuntime);
   if (!runtime) {
     const error = new Error(`Unsupported runtime: ${currentRuntime}`);
@@ -256,11 +265,12 @@ export async function assessCandidate({ source, skill, currentRuntime, scope, re
   }
   const workDir = await mkdtemp(join(tmpdir(), 'skills-manager-attempt-'));
   const operation = {
-    type: 'install',
+    type: operationType,
     source,
     skill,
     runtime: currentRuntime,
     scope,
+    ...operationDetails,
   };
   const nonce = randomBytes(16).toString('hex');
   try {

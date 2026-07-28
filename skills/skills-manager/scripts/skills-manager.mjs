@@ -10,11 +10,14 @@ const MINIMUM_NODE_MAJOR = 22;
 const COMMAND_OPTIONS = {
   abort: new Set(['--work-dir']),
   assess: new Set(['--runtime', '--scope', '--source', '--skill']),
-  continue: new Set(['--accept-copy-mode', '--accept-risk', '--work-dir']),
+  continue: new Set(['--accept-change-scope', '--accept-copy-mode', '--accept-risk', '--work-dir']),
   discover: new Set(['--runtime', '--source']),
   inspect: new Set(['--runtime', '--scope']),
+  'intent-add': new Set(['--intent', '--runtime', '--skill']),
+  'intent-result': new Set(['--result', '--summary', '--work-dir']),
   publish: new Set(['--accept-publication', '--work-dir']),
   validate: new Set(['--work-dir']),
+  'work-order': new Set(['--work-dir']),
 };
 
 function writeEnvelope(envelope, exitCode = 0) {
@@ -29,7 +32,12 @@ function fail(command, code, message) {
 function parseArguments(arguments_) {
   const [command, ...tokens] = arguments_;
   const options = { scope: 'project' };
-  const flags = new Set(['--accept-copy-mode', '--accept-publication', '--accept-risk']);
+  const flags = new Set([
+    '--accept-change-scope',
+    '--accept-copy-mode',
+    '--accept-publication',
+    '--accept-risk',
+  ]);
   const allowedOptions = COMMAND_OPTIONS[command];
   for (let index = 0; index < tokens.length; index += 1) {
     const token = tokens[index];
@@ -88,12 +96,30 @@ async function main() {
   let parsed;
   try {
     parsed = parseArguments(process.argv.slice(2));
-    if (!['inspect', 'discover', 'assess', 'continue', 'abort', 'validate', 'publish'].includes(parsed.command)) {
+    if (
+      ![
+        'inspect',
+        'discover',
+        'assess',
+        'intent-add',
+        'work-order',
+        'intent-result',
+        'continue',
+        'abort',
+        'validate',
+        'publish',
+      ].includes(parsed.command)
+    ) {
       const error = new Error(parsed.command ? `Unknown command: ${parsed.command}` : 'A command is required.');
       error.code = 'invalid_command';
       throw error;
     }
-    if (!['continue', 'abort', 'validate', 'publish'].includes(parsed.command) && !parsed.options.runtime) {
+    if (
+      !['continue', 'abort', 'validate', 'publish', 'work-order', 'intent-result'].includes(
+        parsed.command,
+      ) &&
+      !parsed.options.runtime
+    ) {
       const error = new Error(`${parsed.command} requires --runtime <agent-id>.`);
       error.code = 'missing_runtime';
       throw error;
@@ -104,7 +130,30 @@ async function main() {
       throw error;
     }
 
-    if (parsed.command === 'validate') {
+    if (parsed.command === 'work-order') {
+      if (!parsed.options['work-dir']) {
+        const error = new Error('work-order requires --work-dir <path>.');
+        error.code = 'invalid_arguments';
+        throw error;
+      }
+      const { createIntentWorkOrder } = await import('./lib/intents.mjs');
+      const data = await createIntentWorkOrder({ workDir: parsed.options['work-dir'] });
+      writeEnvelope({ status: 'work_order', command: 'work-order', data });
+    } else if (parsed.command === 'intent-result') {
+      if (!parsed.options['work-dir'] || !parsed.options.result) {
+        const error = new Error('intent-result requires --work-dir <path> and --result <status>.');
+        error.code = 'invalid_arguments';
+        throw error;
+      }
+      const { recordIntentResult } = await import('./lib/intents.mjs');
+      const data = await recordIntentResult({
+        workDir: parsed.options['work-dir'],
+        result: parsed.options.result,
+        summary: parsed.options.summary,
+      });
+      const { envelopeStatus = 'needs_confirmation', ...result } = data;
+      writeEnvelope({ status: envelopeStatus, command: 'intent-result', data: result });
+    } else if (parsed.command === 'validate') {
       if (!parsed.options['work-dir']) {
         const error = new Error('validate requires --work-dir <path>.');
         error.code = 'invalid_arguments';
@@ -138,14 +187,44 @@ async function main() {
         error.code = 'invalid_arguments';
         throw error;
       }
-      const { continueRiskAcceptance } = await import('./lib/upstream.mjs');
-      const data = await continueRiskAcceptance({
-        workDir: parsed.options['work-dir'],
-        acceptRisk: parsed.options['accept-risk'] === true,
-        acceptCopyMode: parsed.options['accept-copy-mode'] === true,
-      });
+      let data;
+      if (parsed.options['accept-change-scope'] === true) {
+        if (parsed.options['accept-risk'] || parsed.options['accept-copy-mode']) {
+          const error = new Error('continue accepts exactly one confirmation flag at a time.');
+          error.code = 'invalid_arguments';
+          throw error;
+        }
+        const { continueChangedFileScope } = await import('./lib/intents.mjs');
+        data = await continueChangedFileScope({ workDir: parsed.options['work-dir'] });
+      } else {
+        const { continueRiskAcceptance } = await import('./lib/upstream.mjs');
+        data = await continueRiskAcceptance({
+          workDir: parsed.options['work-dir'],
+          acceptRisk: parsed.options['accept-risk'] === true,
+          acceptCopyMode: parsed.options['accept-copy-mode'] === true,
+        });
+      }
       const { envelopeStatus = 'ready', ...result } = data;
       writeEnvelope({ status: envelopeStatus, command: 'continue', data: result });
+    } else if (parsed.command === 'intent-add') {
+      if (!parsed.options.skill || !parsed.options.intent) {
+        const error = new Error('intent-add requires --skill <skill-id> and --intent <outcome>.');
+        error.code = 'invalid_arguments';
+        throw error;
+      }
+      const { beginIntentAdd } = await import('./lib/intents.mjs');
+      const data = await beginIntentAdd({
+        repositoryRoot: await findRepositoryRoot(process.cwd()),
+        skill: parsed.options.skill,
+        text: parsed.options.intent,
+        currentRuntime: parsed.options.runtime,
+        environment: process.env,
+      });
+      writeEnvelope({
+        status: data.security.decision === 'approved' ? 'ready' : 'needs_confirmation',
+        command: 'intent-add',
+        data,
+      });
     } else if (parsed.command === 'discover') {
       if (!parsed.options.source) {
         const error = new Error('discover requires --source <repository>.');

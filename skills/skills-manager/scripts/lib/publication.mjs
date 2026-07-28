@@ -138,6 +138,75 @@ function hashEntries(entries, includeSymlinks) {
   return hash.digest('hex');
 }
 
+async function renderedHashForRoot(root) {
+  return hashEntries(await enumerateTree(root), true);
+}
+
+export async function verifyManagedRendering({ repositoryRoot, managed }) {
+  const resolvedRepositoryRoot = await realpath(repositoryRoot);
+  const targets = [];
+  const seen = new Set();
+  for (const storedTarget of managed.physicalTargets) {
+    const target = resolve(resolvedRepositoryRoot, storedTarget);
+    const info = await lstat(target).catch(() => null);
+    if (!info?.isDirectory() || info.isSymbolicLink()) {
+      throw managedError('untracked_change', 'A managed Rendering target is missing or not a real directory.');
+    }
+    const resolvedTarget = await realpath(target);
+    if (!isContained(resolvedRepositoryRoot, resolvedTarget)) {
+      throw managedError('invalid_publication_target', 'A managed Rendering target resolves outside the project.');
+    }
+    if (seen.has(resolvedTarget)) continue;
+    seen.add(resolvedTarget);
+    if ((await renderedHashForRoot(resolvedTarget)) !== managed.renderedHash) {
+      throw managedError('untracked_change', 'A managed Rendering does not match managed state.');
+    }
+    targets.push(resolvedTarget);
+  }
+  if (targets.length === 0) {
+    throw managedError('untracked_change', 'The managed Skill has no readable Rendering target.');
+  }
+  return targets;
+}
+
+export async function createCandidateSnapshot(root) {
+  const entries = await enumerateTree(root);
+  return entries
+    .filter(({ type }) => type !== 'directory')
+    .map((entry) => ({
+      path: entry.relativePath,
+      type: entry.type,
+      ...(entry.type === 'file'
+        ? { content: entry.content.toString('base64') }
+        : { target: entry.link }),
+    }));
+}
+
+export function diffCandidateSnapshots(before, after) {
+  const previous = new Map(before.map((entry) => [entry.path, entry]));
+  const current = new Map(after.map((entry) => [entry.path, entry]));
+  const paths = [...new Set([...previous.keys(), ...current.keys()])].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  return paths.flatMap((path) => {
+    const prior = previous.get(path);
+    const next = current.get(path);
+    if (prior && next && JSON.stringify(prior) === JSON.stringify(next)) return [];
+    const asText = (entry) =>
+      entry?.type === 'file' ? Buffer.from(entry.content, 'base64').toString('utf8') : null;
+    return [
+      {
+        path,
+        status: prior ? (next ? 'modified' : 'deleted') : 'added',
+        before: asText(prior),
+        after: asText(next),
+        ...(prior?.type === 'symlink' ? { beforeTarget: prior.target } : {}),
+        ...(next?.type === 'symlink' ? { afterTarget: next.target } : {}),
+      },
+    ];
+  });
+}
+
 async function readStagingLock(workDir, skill, source, expectedUpstreamHash) {
   const path = join(workDir, 'skills-lock.json');
   const info = await lstat(path).catch(() => null);
@@ -154,7 +223,7 @@ async function readStagingLock(workDir, skill, source, expectedUpstreamHash) {
   if (!entry || !/^[a-f0-9]{64}$/.test(entry.computedHash || '')) {
     throw managedError('validation_failed', 'The staging lock is missing the selected skill identity or hash.');
   }
-  if (entry.computedHash !== expectedUpstreamHash) {
+  if (expectedUpstreamHash && entry.computedHash !== expectedUpstreamHash) {
     throw managedError('validation_failed', 'The pristine candidate does not match its upstream computed hash.');
   }
   if (normalizedSource(entry.source || '') !== normalizedSource(source)) {
@@ -163,7 +232,13 @@ async function readStagingLock(workDir, skill, source, expectedUpstreamHash) {
   return entry;
 }
 
-async function validateCandidate({ candidateRoot, workDir, operation, checkDirectoryName = true }) {
+export async function validateCandidate({
+  candidateRoot,
+  workDir,
+  operation,
+  checkDirectoryName = true,
+  allowCustomized = false,
+}) {
   if (checkDirectoryName && basename(candidateRoot) !== operation.skill) {
     throw managedError('validation_failed', 'Candidate directory does not match the selected skill identifier.');
   }
@@ -182,10 +257,15 @@ async function validateCandidate({ candidateRoot, workDir, operation, checkDirec
     entries.filter(({ type, relativePath }) => type === 'file' && relativePath.endsWith('.md')),
   );
   const upstreamHash = hashEntries(entries, false);
-  const lockEntry = await readStagingLock(workDir, operation.skill, operation.source, upstreamHash);
+  const lockEntry = await readStagingLock(
+    workDir,
+    operation.skill,
+    operation.source,
+    allowCustomized ? null : upstreamHash,
+  );
   return {
     files: entries.filter(({ type }) => type !== 'directory').map(({ relativePath }) => relativePath),
-    upstreamHash,
+    upstreamHash: lockEntry.computedHash,
     renderedHash: hashEntries(entries, true),
     lockEntry,
   };
@@ -216,7 +296,7 @@ function observedTopologyTargets(observation) {
   }));
 }
 
-async function planProjectTopology(manifest) {
+export async function planProjectTopology(manifest) {
   const observation = await inspectEnvironment({
     repositoryRoot: manifest.repositoryRoot,
     currentRuntime: manifest.operation.runtime,
@@ -314,7 +394,16 @@ export async function validateAttempt({ workDir }) {
       candidateRoot: manifest.candidateRoot,
       workDir: resolvedWorkDir,
       operation: manifest.operation,
+      allowCustomized: manifest.operation.type !== 'install',
     });
+    if (
+      manifest.operation.type !== 'install' &&
+      (validation.upstreamHash !== manifest.baselineValidation?.upstreamHash ||
+        createHash('sha256').update(JSON.stringify(validation.lockEntry)).digest('hex') !==
+          manifest.baselineValidation?.lockEntryHash)
+    ) {
+      throw managedError('validation_failed', 'The pristine upstream lock changed after the work order.');
+    }
     const topology = await planProjectTopology(manifest);
     const acceptedCandidateHash = validation.renderedHash;
     const review = {
@@ -326,6 +415,7 @@ export async function validateAttempt({ workDir }) {
         physicalTargets: topology.physicalTargets,
         links: topology.links,
       },
+      ...(manifest.semanticReview || {}),
     };
     await saveManifest(resolvedWorkDir, {
       ...manifest,
@@ -444,7 +534,11 @@ async function readJsonState(path, kind) {
   }
 }
 
-async function assertContainedStateDirectory(repositoryRoot, stateDirectory) {
+export async function readManagedState(repositoryRoot) {
+  return readJsonState(join(repositoryRoot, '.skills-manager/state.json'), 'managed_state');
+}
+
+export async function assertContainedStateDirectory(repositoryRoot, stateDirectory) {
   const info = await lstat(stateDirectory).catch(() => null);
   if (info?.isSymbolicLink() || (info && !info.isDirectory())) {
     throw managedError('invalid_publication_target', 'Managed-state directory must be a real project directory.');
@@ -593,7 +687,7 @@ export async function publishAttempt({ workDir }) {
   ]) {
     await assertContainedExistingAncestor(repositoryRoot, path);
   }
-  for (const path of [...targets, ...links.map(({ absolutePath }) => absolutePath)]) {
+  for (const path of links.map(({ absolutePath }) => absolutePath)) {
     if (await lstat(path).catch(() => null)) {
       throw managedError('invalid_publication_target', 'A planned publication path already exists.');
     }
@@ -605,6 +699,7 @@ export async function publishAttempt({ workDir }) {
       candidateRoot: manifest.candidateRoot,
       workDir: resolvedWorkDir,
       operation: manifest.operation,
+      allowCustomized: manifest.operation.type !== 'install',
     });
     if (validation.renderedHash !== manifest.validation?.acceptedCandidateHash) {
       throw managedError('validation_failed', 'The candidate changed after review.');
@@ -632,6 +727,9 @@ export async function publishAttempt({ workDir }) {
     .filter((entry) => entry.installName === manifest.operation.skill)
     .map((entry) => entry.identity);
   const existingIdentity = matchingIdentities[0];
+  const existingManagedSkill = Object.values(existingState.skills).find(
+    (entry) => entry.installName === manifest.operation.skill,
+  );
   const existingLockEntry = existingLock.skills[manifest.operation.skill];
   const differentIdentity =
     matchingIdentities.length > 1 ||
@@ -653,6 +751,38 @@ export async function publishAttempt({ workDir }) {
       choices: ['cancel'],
     });
   }
+  if (
+    manifest.operation.type !== 'install' &&
+    JSON.stringify(existingManagedSkill) !== JSON.stringify(manifest.operation.baselineManagedState)
+  ) {
+    const error = new Error('Managed Skill state changed while this Intent operation was pending.');
+    error.status = 'conflict';
+    error.data = {
+      reason: 'operation_baseline_changed',
+      choices: ['restart', 'cancel'],
+    };
+    throw error;
+  }
+  if (manifest.operation.type === 'install') {
+    for (const target of targets) {
+      if (await lstat(target).catch(() => null)) {
+        throw managedError('invalid_publication_target', 'A planned publication path already exists.');
+      }
+    }
+  } else {
+    if (!existingManagedSkill) {
+      throw managedError('managed_skill_not_found', 'The managed Skill disappeared before publication.');
+    }
+    for (const target of targets) {
+      const info = await lstat(target).catch(() => null);
+      if (!info?.isDirectory() || info.isSymbolicLink()) {
+        throw managedError('untracked_change', 'A managed Rendering target is missing or no longer a real directory.');
+      }
+      if ((await renderedHashForRoot(target)) !== existingManagedSkill.renderedHash) {
+        throw managedError('untracked_change', 'A managed Rendering changed after the Intent review began.');
+      }
+    }
+  }
   const identityHash = createHash('sha256')
     .update(source)
     .update('\0')
@@ -665,7 +795,8 @@ export async function publishAttempt({ workDir }) {
     upstreamHash: validation.lockEntry.computedHash,
     renderedHash: validation.renderedHash,
     desiredRenderedHash: validation.renderedHash,
-    effectiveIntentsHash: createHash('sha256').update('[]').digest('hex'),
+    effectiveIntentsHash:
+      manifest.effectiveIntentsHash || createHash('sha256').update('[]').digest('hex'),
     physicalTargets: relativeTargets,
     topologyLinks: [...(manifest.topology.existingLinks || []), ...plannedLinks],
   };
@@ -673,10 +804,52 @@ export async function publishAttempt({ workDir }) {
     version: 1,
     skills: { ...existingState.skills, [identityHash]: managedSkill },
   };
+  const preparedState =
+    manifest.operation.type === 'install'
+      ? nextState
+      : {
+          version: 1,
+          skills: {
+            ...nextState.skills,
+            [identityHash]: {
+              ...managedSkill,
+              renderedHash: existingManagedSkill.renderedHash,
+            },
+          },
+        };
   const nextLock = {
     version: 1,
     skills: { ...existingLock.skills, [manifest.operation.skill]: validation.lockEntry },
   };
+  let intentPublication = null;
+  if (manifest.candidateIntentState) {
+    const { relativePath, record } = manifest.candidateIntentState;
+    const intentsDirectory = join(repositoryRoot, '.skills-manager/intents');
+    const absolutePath = resolve(repositoryRoot, relativePath || '');
+    const expectedRelativePath = `.skills-manager/intents/${manifest.operation.skill}__${identityHash.slice(0, 8)}.json`;
+    if (
+      relativePath !== expectedRelativePath ||
+      !isContained(intentsDirectory, absolutePath) ||
+      JSON.stringify(record?.identity) !== JSON.stringify(identity)
+    ) {
+      throw managedError('invalid_intent_state', 'The candidate Intent state is invalid or mismatched.');
+    }
+    intentPublication = { absolutePath, intentsDirectory, record };
+    await assertContainedStateDirectory(repositoryRoot, intentsDirectory);
+    const currentIntentSnapshot = await snapshot(absolutePath);
+    const currentIntentHash = createHash('sha256')
+      .update(currentIntentSnapshot === null ? 'null' : currentIntentSnapshot)
+      .digest('hex');
+    if (currentIntentHash !== manifest.operation.baselineIntentStateHash) {
+      const error = new Error('Intent state changed while this operation was pending.');
+      error.status = 'conflict';
+      error.data = {
+        reason: 'operation_baseline_changed',
+        choices: ['restart', 'cancel'],
+      };
+      throw error;
+    }
+  }
 
   const replacementsByDirectory = new Map(
     directoryReplacements.map((replacement) => [replacement.absolutePath, replacement]),
@@ -694,9 +867,12 @@ export async function publishAttempt({ workDir }) {
   const createdDirectories = new Set();
   const replacedDirectories = [];
   const publishedTargets = [];
+  const targetBackups = [];
   const createdLinks = [];
   let stateSnapshot;
   let lockSnapshot;
+  let intentSnapshot;
+  let intentDirectoryExisted;
   try {
     for (const path of [...siblings.map(dirname), ...links.map(({ absolutePath }) => dirname(absolutePath))]) {
       for (const created of await ensureContainedDirectory(repositoryRoot, path)) {
@@ -714,6 +890,7 @@ export async function publishAttempt({ workDir }) {
         workDir: resolvedWorkDir,
         operation: manifest.operation,
         checkDirectoryName: false,
+        allowCustomized: manifest.operation.type !== 'install',
       });
       if (siblingValidation.renderedHash !== manifest.validation.acceptedCandidateHash) {
         throw managedError('validation_failed', 'A publication sibling changed during preparation.');
@@ -721,7 +898,12 @@ export async function publishAttempt({ workDir }) {
     }
     stateSnapshot = await snapshot(statePath);
     lockSnapshot = await snapshot(lockPath);
-    await atomicWriteJson(statePath, nextState, manifest.nonce);
+    if (intentPublication) {
+      intentDirectoryExisted = Boolean(await lstat(intentPublication.intentsDirectory).catch(() => null));
+      intentSnapshot = await snapshot(intentPublication.absolutePath);
+      await atomicWriteJson(intentPublication.absolutePath, intentPublication.record, manifest.nonce);
+    }
+    await atomicWriteJson(statePath, preparedState, manifest.nonce);
     await atomicWriteJson(lockPath, nextLock, manifest.nonce);
     for (let index = 0; index < targets.length; index += 1) {
       const replacement = replacementsByDirectory.get(dirname(targets[index]));
@@ -740,6 +922,14 @@ export async function publishAttempt({ workDir }) {
         await mkdir(replacement.absolutePath);
         replacedDirectories.push(replacement);
       }
+      if (manifest.operation.type !== 'install') {
+        const backup = join(
+          dirname(targets[index]),
+          `.${manifest.operation.skill}.skills-manager-backup-${manifest.nonce}-${index}`,
+        );
+        await rename(targets[index], backup);
+        targetBackups.push({ target: targets[index], backup });
+      }
       await rename(siblings[index], targets[index]);
       publishedTargets.push(targets[index]);
     }
@@ -751,17 +941,15 @@ export async function publishAttempt({ workDir }) {
         throw managedError('invalid_publication_target', 'Published topology link escapes the project.');
       }
     }
-    await rm(resolvedWorkDir, { recursive: true, force: true });
-    return {
-      operation: manifest.operation,
-      identity: managedSkill.identity,
-      targets,
-      links: plannedLinks,
-      state: { upstreamHash: managedSkill.upstreamHash, renderedHash: managedSkill.renderedHash },
-    };
+    if (preparedState !== nextState) {
+      await atomicWriteJson(statePath, nextState, manifest.nonce);
+    }
   } catch (error) {
     for (const link of createdLinks.reverse()) await rm(link, { force: true });
     for (const target of publishedTargets.reverse()) await rm(target, { recursive: true, force: true });
+    for (const { target, backup } of targetBackups.reverse()) {
+      await rename(backup, target).catch(() => {});
+    }
     for (const sibling of siblings) await rm(sibling, { recursive: true, force: true });
     for (const replacement of replacedDirectories.reverse()) {
       await rmdir(replacement.absolutePath).catch(() => {});
@@ -769,6 +957,10 @@ export async function publishAttempt({ workDir }) {
     }
     if (stateSnapshot !== undefined) await restore(statePath, stateSnapshot);
     if (lockSnapshot !== undefined) await restore(lockPath, lockSnapshot);
+    if (intentPublication && intentSnapshot !== undefined) {
+      await restore(intentPublication.absolutePath, intentSnapshot);
+      if (!intentDirectoryExisted) await rmdir(intentPublication.intentsDirectory).catch(() => {});
+    }
     if (!stateDirectoryExisted) await rmdir(dirname(statePath)).catch(() => {});
     for (const path of [...createdDirectories].sort((left, right) => right.length - left.length)) {
       await rmdir(path).catch(() => {});
@@ -778,4 +970,26 @@ export async function publishAttempt({ workDir }) {
     }
     throw error;
   }
+  const backupCleanupFailures = [];
+  for (const { backup } of targetBackups) {
+    try {
+      await rm(backup, { recursive: true, force: true });
+    } catch (error) {
+      backupCleanupFailures.push({ backup, message: error.message });
+    }
+  }
+  if (backupCleanupFailures.length > 0) {
+    throw managedError(
+      'publication_cleanup_failed',
+      `The new Rendering is authoritative, but ${backupCleanupFailures.length} previous-Rendering backup(s) could not be removed.`,
+    );
+  }
+  await rm(resolvedWorkDir, { recursive: true, force: true }).catch(() => {});
+  return {
+    operation: manifest.operation,
+    identity: managedSkill.identity,
+    targets,
+    links: plannedLinks,
+    state: { upstreamHash: managedSkill.upstreamHash, renderedHash: managedSkill.renderedHash },
+  };
 }

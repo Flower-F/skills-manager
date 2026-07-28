@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { chmod, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -923,6 +924,566 @@ test('a late link-publication failure rolls back targets, links, state, and lock
     await assert.rejects(lstat(join(repository, 'skills-lock.json')), { code: 'ENOENT' });
   } finally {
     await chmod(join(repository, '.factory'), 0o700);
+    await audit.close();
+  }
+});
+
+async function installManagedAlpha(repository, fake, audit) {
+  const assessed = await assessedAttempt(repository, fake, audit);
+  await runCli(['validate', '--work-dir', assessed.result.data.workDir], { cwd: repository, env: {} });
+  return runCli(['publish', '--work-dir', assessed.result.data.workDir, '--accept-publication'], {
+    cwd: repository,
+    env: {},
+  });
+}
+
+test('Intent input is constrained to one concise semantic outcome', async () => {
+  const repository = await temporaryDirectory('skills-manager-intent-input-');
+  await mkdir(join(repository, '.git'));
+  const result = await runCli(
+    [
+      'intent-add',
+      '--skill',
+      'alpha-skill',
+      '--intent',
+      'User said this.\nAgent replied with that.',
+      '--runtime',
+      'codex',
+    ],
+    { cwd: repository, env: {} },
+  );
+  assert.equal(result.exitCode, 1);
+  assert.equal(result.result.error.code, 'invalid_intent');
+});
+
+test('an approved Intent rerenders from latest upstream through work order, result, review, and publication', async () => {
+  const repository = await temporaryDirectory('skills-manager-intent-add-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const intentText = 'Prefer concise examples in the candidate guidance.';
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const begun = await runCli(
+      ['intent-add', '--skill', 'alpha-skill', '--intent', intentText, '--runtime', 'codex'],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+          FAKE_UPSTREAM_SKILL_CONTENT:
+            '---\nname: alpha-skill\ndescription: Latest upstream description.\n---\n\n# Latest upstream\n',
+        },
+      },
+    );
+    assert.equal(begun.exitCode, 0);
+    assert.equal(begun.result.status, 'ready');
+    assert.equal(begun.result.data.operation.type, 'intent_add');
+    assert.notEqual(
+      begun.result.data.candidate.root,
+      join(repository, '.agents/skills/alpha-skill'),
+    );
+
+    const ordered = await runCli(['work-order', '--work-dir', begun.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    assert.equal(ordered.exitCode, 0);
+    assert.equal(ordered.result.status, 'work_order');
+    assert.equal(ordered.result.data.intent.text, intentText);
+    assert.equal(ordered.result.data.candidate.root, begun.result.data.candidate.root);
+    assert.deepEqual(ordered.result.data.editingBoundary, {
+      root: begun.result.data.candidate.root,
+      allowExistingFiles: true,
+      newFilesRequireConfirmation: true,
+    });
+    assert.deepEqual(ordered.result.data.requiredResultStatuses, [
+      'applied',
+      'adapted',
+      'obsolete',
+      'failed',
+    ]);
+
+    await writeFile(
+      join(begun.result.data.candidate.root, 'SKILL.md'),
+      '---\nname: alpha-skill\ndescription: Latest upstream description.\n---\n\n# Latest upstream\n\nUse concise examples.\n',
+    );
+    const resulted = await runCli(
+      [
+        'intent-result',
+        '--work-dir',
+        begun.result.data.workDir,
+        '--result',
+        'applied',
+        '--summary',
+        'Added concise-example guidance.',
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(resulted.exitCode, 0);
+    assert.equal(resulted.result.status, 'needs_confirmation');
+    assert.equal(resulted.result.data.review.semanticOutcome.intent, intentText);
+    assert.equal(resulted.result.data.review.semanticOutcome.result, 'applied');
+    assert.deepEqual(
+      resulted.result.data.review.materialDiff.map(({ path, status }) => ({ path, status })),
+      [{ path: 'SKILL.md', status: 'modified' }],
+    );
+    assert.deepEqual(
+      resulted.result.data.review.totalDiff.map(({ path, status }) => ({ path, status })),
+      [{ path: 'SKILL.md', status: 'modified' }],
+    );
+
+    const published = await runCli(
+      ['publish', '--work-dir', begun.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(published.result.status, 'complete');
+    assert.match(
+      await readFile(join(repository, '.agents/skills/alpha-skill/SKILL.md'), 'utf8'),
+      /Use concise examples/,
+    );
+    const state = JSON.parse(await readFile(join(repository, '.skills-manager/state.json'), 'utf8'));
+    const [managed] = Object.values(state.skills);
+    assert.notEqual(managed.upstreamHash, managed.renderedHash);
+    assert.equal(managed.renderedHash, managed.desiredRenderedHash);
+    assert.match(managed.effectiveIntentsHash, /^[a-f0-9]{64}$/);
+    const intentFiles = await readdir(join(repository, '.skills-manager/intents'));
+    assert.match(intentFiles[0], /^alpha-skill__[a-f0-9]{8}\.json$/);
+    const intentRecord = JSON.parse(
+      await readFile(join(repository, '.skills-manager/intents', intentFiles[0]), 'utf8'),
+    );
+    assert.deepEqual(intentRecord.identity, managed.identity);
+    assert.equal(intentRecord.intents.length, 1);
+    assert.equal(intentRecord.intents[0].text, intentText);
+    assert.equal(intentRecord.intents[0].state, 'active');
+    assert.equal(
+      managed.effectiveIntentsHash,
+      createHash('sha256').update(JSON.stringify(intentRecord.intents)).digest('hex'),
+    );
+    const calls = (await readFile(fake.calls, 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(calls.length, 2);
+  } finally {
+    await audit.close();
+  }
+});
+
+test('Intent candidates fail closed when an Agent adds an escaping symlink', async () => {
+  const repository = await temporaryDirectory('skills-manager-intent-escape-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const begun = await runCli(
+      [
+        'intent-add',
+        '--skill',
+        'alpha-skill',
+        '--intent',
+        'Link to the repository policy.',
+        '--runtime',
+        'codex',
+      ],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+        },
+      },
+    );
+    await runCli(['work-order', '--work-dir', begun.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    await symlink('/tmp', join(begun.result.data.candidate.root, 'outside'));
+    const resulted = await runCli(
+      ['intent-result', '--work-dir', begun.result.data.workDir, '--result', 'applied'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(resulted.exitCode, 1);
+    assert.equal(resulted.result.error.code, 'validation_failed');
+    assert.match(resulted.result.error.message, /symbolic link is prohibited/i);
+  } finally {
+    await audit.close();
+  }
+});
+
+test('adding another Intent preserves and reapplies the complete Effective-intent set', async () => {
+  const repository = await temporaryDirectory('skills-manager-intent-merge-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const addAndPublish = async (intent, renderedBody) => {
+    const begun = await runCli(
+      ['intent-add', '--skill', 'alpha-skill', '--intent', intent, '--runtime', 'codex'],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+        },
+      },
+    );
+    const ordered = await runCli(['work-order', '--work-dir', begun.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    await writeFile(
+      join(begun.result.data.candidate.root, 'SKILL.md'),
+      `---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n${renderedBody}\n`,
+    );
+    const resulted = await runCli(
+      ['intent-result', '--work-dir', begun.result.data.workDir, '--result', 'applied'],
+      { cwd: repository, env: {} },
+    );
+    const published = await runCli(
+      ['publish', '--work-dir', begun.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(published.result.status, 'complete');
+    return ordered.result.data.effectiveIntents;
+  };
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const first = await addAndPublish('Prefer concise examples.', 'Use concise examples.');
+    assert.deepEqual(first.map(({ text }) => text), ['Prefer concise examples.']);
+
+    const second = await addAndPublish(
+      'Include one failure example.',
+      'Use concise examples.\n\nInclude one failure example.',
+    );
+    assert.deepEqual(second.map(({ text }) => text), [
+      'Prefer concise examples.',
+      'Include one failure example.',
+    ]);
+    const [intentFile] = await readdir(join(repository, '.skills-manager/intents'));
+    const record = JSON.parse(
+      await readFile(join(repository, '.skills-manager/intents', intentFile), 'utf8'),
+    );
+    assert.deepEqual(record.intents.map(({ text }) => text), [
+      'Prefer concise examples.',
+      'Include one failure example.',
+    ]);
+  } finally {
+    await audit.close();
+  }
+});
+
+test('Intent work orders reject a managed Rendering replaced by an external link', async () => {
+  const repository = await temporaryDirectory('skills-manager-intent-current-link-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const external = await temporaryDirectory('skills-manager-external-rendering-');
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const begun = await runCli(
+      ['intent-add', '--skill', 'alpha-skill', '--intent', 'Prefer concise output.', '--runtime', 'codex'],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+        },
+      },
+    );
+    const target = join(repository, '.agents/skills/alpha-skill');
+    await rm(target, { recursive: true });
+    await symlink(external, target);
+    const ordered = await runCli(['work-order', '--work-dir', begun.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    assert.equal(ordered.exitCode, 1);
+    assert.equal(ordered.result.error.code, 'untracked_change');
+  } finally {
+    await audit.close();
+  }
+});
+
+test('intent-add rejects an external Intent-state directory before reading records', async () => {
+  const repository = await temporaryDirectory('skills-manager-intent-read-link-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const external = await temporaryDirectory('skills-manager-external-intent-read-');
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    await symlink(external, join(repository, '.skills-manager/intents'));
+    const begun = await runCli(
+      ['intent-add', '--skill', 'alpha-skill', '--intent', 'Prefer concise output.', '--runtime', 'codex'],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+        },
+      },
+    );
+    assert.equal(begun.exitCode, 1);
+    assert.equal(begun.result.error.code, 'invalid_publication_target');
+  } finally {
+    await audit.close();
+  }
+});
+
+test('overlapping Intent additions cannot overwrite a newly published Intent baseline', async () => {
+  const repository = await temporaryDirectory('skills-manager-intent-concurrent-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+  };
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const first = await runCli(
+      ['intent-add', '--skill', 'alpha-skill', '--intent', 'Prefer concise output.', '--runtime', 'codex'],
+      { cwd: repository, env: environment },
+    );
+    const second = await runCli(
+      ['intent-add', '--skill', 'alpha-skill', '--intent', 'Include failure guidance.', '--runtime', 'codex'],
+      { cwd: repository, env: environment },
+    );
+    for (const attempt of [first, second]) {
+      await runCli(['work-order', '--work-dir', attempt.result.data.workDir], {
+        cwd: repository,
+        env: {},
+      });
+      await writeFile(
+        join(attempt.result.data.candidate.root, 'SKILL.md'),
+        `---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n${attempt === first ? 'Concise.' : 'Failure guidance.'}\n`,
+      );
+      await runCli(
+        ['intent-result', '--work-dir', attempt.result.data.workDir, '--result', 'applied'],
+        { cwd: repository, env: {} },
+      );
+    }
+    const firstPublished = await runCli(
+      ['publish', '--work-dir', first.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(firstPublished.result.status, 'complete');
+    const secondPublished = await runCli(
+      ['publish', '--work-dir', second.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(secondPublished.exitCode, 0);
+    assert.equal(secondPublished.result.status, 'conflict');
+    assert.equal(secondPublished.result.data.reason, 'operation_baseline_changed');
+    const [intentFile] = await readdir(join(repository, '.skills-manager/intents'));
+    const record = JSON.parse(
+      await readFile(join(repository, '.skills-manager/intents', intentFile), 'utf8'),
+    );
+    assert.deepEqual(record.intents.map(({ text }) => text), ['Prefer concise output.']);
+    assert.match(
+      await readFile(join(repository, '.agents/skills/alpha-skill/SKILL.md'), 'utf8'),
+      /Concise/,
+    );
+  } finally {
+    await audit.close();
+  }
+});
+
+test('Intent validation rejects staging lock changes after the work order', async () => {
+  const repository = await temporaryDirectory('skills-manager-intent-lock-drift-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const begun = await runCli(
+      ['intent-add', '--skill', 'alpha-skill', '--intent', 'Prefer concise output.', '--runtime', 'codex'],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+        },
+      },
+    );
+    await runCli(['work-order', '--work-dir', begun.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    const stagingLockPath = join(begun.result.data.workDir, 'skills-lock.json');
+    const stagingLock = JSON.parse(await readFile(stagingLockPath, 'utf8'));
+    stagingLock.skills['alpha-skill'].computedHash = 'f'.repeat(64);
+    await writeFile(stagingLockPath, `${JSON.stringify(stagingLock, null, 2)}\n`);
+    await writeFile(
+      join(begun.result.data.candidate.root, 'SKILL.md'),
+      '---\nname: alpha-skill\ndescription: Candidate description.\n---\n\nConcise.\n',
+    );
+    const resulted = await runCli(
+      ['intent-result', '--work-dir', begun.result.data.workDir, '--result', 'applied'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(resulted.exitCode, 1);
+    assert.equal(resulted.result.error.code, 'validation_failed');
+    assert.match(resulted.result.error.message, /upstream lock changed/i);
+  } finally {
+    await audit.close();
+  }
+});
+
+test('Intent publication rejects an external nested Intent-state link', async () => {
+  const repository = await temporaryDirectory('skills-manager-intent-state-link-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const external = await temporaryDirectory('skills-manager-external-intents-');
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const begun = await runCli(
+      ['intent-add', '--skill', 'alpha-skill', '--intent', 'Prefer concise output.', '--runtime', 'codex'],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+        },
+      },
+    );
+    await runCli(['work-order', '--work-dir', begun.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    await writeFile(
+      join(begun.result.data.candidate.root, 'SKILL.md'),
+      '---\nname: alpha-skill\ndescription: Candidate description.\n---\n\nConcise.\n',
+    );
+    await runCli(
+      ['intent-result', '--work-dir', begun.result.data.workDir, '--result', 'applied'],
+      { cwd: repository, env: {} },
+    );
+    await symlink(external, join(repository, '.skills-manager/intents'));
+    const published = await runCli(
+      ['publish', '--work-dir', begun.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(published.exitCode, 1);
+    assert.equal(published.result.error.code, 'invalid_publication_target');
+    assert.deepEqual(await readdir(external), []);
+  } finally {
+    await audit.close();
+  }
+});
+
+test('new files in an Intent result require explicit scope confirmation before review', async () => {
+  const repository = await temporaryDirectory('skills-manager-intent-new-file-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const begun = await runCli(
+      [
+        'intent-add',
+        '--skill',
+        'alpha-skill',
+        '--intent',
+        'Add a short local reference with usage guidance.',
+        '--runtime',
+        'codex',
+      ],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+        },
+      },
+    );
+    await runCli(['work-order', '--work-dir', begun.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    await mkdir(join(begun.result.data.candidate.root, 'references'));
+    await writeFile(
+      join(begun.result.data.candidate.root, 'references/usage.md'),
+      '# Usage\n\nKeep examples concise.\n',
+    );
+    const resulted = await runCli(
+      ['intent-result', '--work-dir', begun.result.data.workDir, '--result', 'applied'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(resulted.result.status, 'needs_confirmation');
+    assert.equal(resulted.result.data.reason, 'changed_file_scope');
+    assert.deepEqual(resulted.result.data.addedFiles, ['references/usage.md']);
+
+    const continued = await runCli(
+      ['continue', '--work-dir', begun.result.data.workDir, '--accept-change-scope'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(continued.result.status, 'needs_confirmation');
+    assert.deepEqual(
+      continued.result.data.review.materialDiff.map(({ path, status }) => ({ path, status })),
+      [{ path: 'references/usage.md', status: 'added' }],
+    );
+  } finally {
+    await audit.close();
+  }
+});
+
+test('changed-file confirmation cannot approve later unreviewed candidate edits', async () => {
+  const repository = await temporaryDirectory('skills-manager-intent-scope-race-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const begun = await runCli(
+      [
+        'intent-add',
+        '--skill',
+        'alpha-skill',
+        '--intent',
+        'Add a short local reference.',
+        '--runtime',
+        'codex',
+      ],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+        },
+      },
+    );
+    await runCli(['work-order', '--work-dir', begun.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    await writeFile(join(begun.result.data.candidate.root, 'usage.md'), '# Usage\n');
+    await runCli(
+      ['intent-result', '--work-dir', begun.result.data.workDir, '--result', 'applied'],
+      { cwd: repository, env: {} },
+    );
+    await writeFile(
+      join(begun.result.data.candidate.root, 'SKILL.md'),
+      '---\nname: alpha-skill\ndescription: Changed after result.\n---\n',
+    );
+    const continued = await runCli(
+      ['continue', '--work-dir', begun.result.data.workDir, '--accept-change-scope'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(continued.exitCode, 1);
+    assert.equal(continued.result.error.code, 'validation_failed');
+    assert.match(continued.result.error.message, /changed after the Agent result/i);
+    await assert.rejects(lstat(begun.result.data.workDir), { code: 'ENOENT' });
+  } finally {
     await audit.close();
   }
 });
