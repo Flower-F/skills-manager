@@ -10,12 +10,20 @@ const MINIMUM_NODE_MAJOR = 22;
 const COMMAND_OPTIONS = {
   abort: new Set(['--work-dir']),
   assess: new Set(['--runtime', '--scope', '--source', '--skill']),
-  continue: new Set(['--accept-change-scope', '--accept-copy-mode', '--accept-risk', '--work-dir']),
+  continue: new Set([
+    '--accept-change-scope',
+    '--accept-copy-mode',
+    '--accept-risk',
+    '--accept-semantic-revision',
+    '--keep-obsolete-intents',
+    '--work-dir',
+  ]),
   discover: new Set(['--runtime', '--source']),
   inspect: new Set(['--runtime', '--scope']),
   'intent-add': new Set(['--intent', '--runtime', '--skill']),
-  'intent-result': new Set(['--result', '--summary', '--work-dir']),
+  'intent-result': new Set(['--result', '--results', '--summary', '--work-dir']),
   publish: new Set(['--accept-publication', '--work-dir']),
+  update: new Set(['--runtime', '--skill']),
   validate: new Set(['--work-dir']),
   'work-order': new Set(['--work-dir']),
 };
@@ -37,6 +45,8 @@ function parseArguments(arguments_) {
     '--accept-copy-mode',
     '--accept-publication',
     '--accept-risk',
+    '--accept-semantic-revision',
+    '--keep-obsolete-intents',
   ]);
   const allowedOptions = COMMAND_OPTIONS[command];
   for (let index = 0; index < tokens.length; index += 1) {
@@ -108,6 +118,7 @@ async function main() {
         'abort',
         'validate',
         'publish',
+        'update',
       ].includes(parsed.command)
     ) {
       const error = new Error(parsed.command ? `Unknown command: ${parsed.command}` : 'A command is required.');
@@ -140,8 +151,14 @@ async function main() {
       const data = await createIntentWorkOrder({ workDir: parsed.options['work-dir'] });
       writeEnvelope({ status: 'work_order', command: 'work-order', data });
     } else if (parsed.command === 'intent-result') {
-      if (!parsed.options['work-dir'] || !parsed.options.result) {
-        const error = new Error('intent-result requires --work-dir <path> and --result <status>.');
+      if (
+        !parsed.options['work-dir'] ||
+        (!parsed.options.result && !parsed.options.results) ||
+        (parsed.options.result && parsed.options.results)
+      ) {
+        const error = new Error(
+          'intent-result requires --work-dir <path> and exactly one of --result <status> or --results <json>.',
+        );
         error.code = 'invalid_arguments';
         throw error;
       }
@@ -149,6 +166,7 @@ async function main() {
       const data = await recordIntentResult({
         workDir: parsed.options['work-dir'],
         result: parsed.options.result,
+        results: parsed.options.results,
         summary: parsed.options.summary,
       });
       const { envelopeStatus = 'needs_confirmation', ...result } = data;
@@ -188,14 +206,31 @@ async function main() {
         throw error;
       }
       let data;
+      const confirmationCount = [
+        parsed.options['accept-change-scope'],
+        parsed.options['accept-copy-mode'],
+        parsed.options['accept-risk'],
+        parsed.options['accept-semantic-revision'],
+        parsed.options['keep-obsolete-intents'],
+      ].filter(Boolean).length;
+      if (confirmationCount !== 1) {
+        const error = new Error(
+          parsed.options['accept-copy-mode'] && parsed.options['accept-risk']
+            ? 'copy-mode confirmation cannot be combined with security risk acceptance.'
+            : 'continue requires exactly one confirmation flag.',
+        );
+        error.code = 'invalid_continuation';
+        throw error;
+      }
       if (parsed.options['accept-change-scope'] === true) {
-        if (parsed.options['accept-risk'] || parsed.options['accept-copy-mode']) {
-          const error = new Error('continue accepts exactly one confirmation flag at a time.');
-          error.code = 'invalid_arguments';
-          throw error;
-        }
         const { continueChangedFileScope } = await import('./lib/intents.mjs');
         data = await continueChangedFileScope({ workDir: parsed.options['work-dir'] });
+      } else if (parsed.options['accept-semantic-revision'] === true) {
+        const { continueSemanticRevision } = await import('./lib/intents.mjs');
+        data = await continueSemanticRevision({ workDir: parsed.options['work-dir'] });
+      } else if (parsed.options['keep-obsolete-intents'] === true) {
+        const { continueKeepingObsoleteIntents } = await import('./lib/intents.mjs');
+        data = await continueKeepingObsoleteIntents({ workDir: parsed.options['work-dir'] });
       } else {
         const { continueRiskAcceptance } = await import('./lib/upstream.mjs');
         data = await continueRiskAcceptance({
@@ -203,9 +238,31 @@ async function main() {
           acceptRisk: parsed.options['accept-risk'] === true,
           acceptCopyMode: parsed.options['accept-copy-mode'] === true,
         });
+        if (data.operation?.type === 'update') {
+          const { prepareUpdateAttempt } = await import('./lib/intents.mjs');
+          data = await prepareUpdateAttempt({ workDir: parsed.options['work-dir'] });
+        }
       }
       const { envelopeStatus = 'ready', ...result } = data;
       writeEnvelope({ status: envelopeStatus, command: 'continue', data: result });
+    } else if (parsed.command === 'update') {
+      if (!parsed.options.skill) {
+        const error = new Error('update requires --skill <skill-id>.');
+        error.code = 'invalid_arguments';
+        throw error;
+      }
+      const { beginUpdate } = await import('./lib/intents.mjs');
+      const data = await beginUpdate({
+        repositoryRoot: await findRepositoryRoot(process.cwd()),
+        skill: parsed.options.skill,
+        currentRuntime: parsed.options.runtime,
+        environment: process.env,
+      });
+      const {
+        envelopeStatus = data.security?.decision === 'approved' ? 'ready' : 'needs_confirmation',
+        ...result
+      } = data;
+      writeEnvelope({ status: envelopeStatus, command: 'update', data: result });
     } else if (parsed.command === 'intent-add') {
       if (!parsed.options.skill || !parsed.options.intent) {
         const error = new Error('intent-add requires --skill <skill-id> and --intent <outcome>.');

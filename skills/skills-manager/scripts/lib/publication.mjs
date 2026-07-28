@@ -822,19 +822,21 @@ export async function publishAttempt({ workDir }) {
     skills: { ...existingLock.skills, [manifest.operation.skill]: validation.lockEntry },
   };
   let intentPublication = null;
-  if (manifest.candidateIntentState) {
-    const { relativePath, record } = manifest.candidateIntentState;
+  if (manifest.operation.type !== 'install') {
+    const relativePath =
+      manifest.candidateIntentState?.relativePath || manifest.operation.intentStateRelativePath;
+    const record = manifest.candidateIntentState?.record;
     const intentsDirectory = join(repositoryRoot, '.skills-manager/intents');
     const absolutePath = resolve(repositoryRoot, relativePath || '');
     const expectedRelativePath = `.skills-manager/intents/${manifest.operation.skill}__${identityHash.slice(0, 8)}.json`;
     if (
       relativePath !== expectedRelativePath ||
       !isContained(intentsDirectory, absolutePath) ||
-      JSON.stringify(record?.identity) !== JSON.stringify(identity)
+      (record && JSON.stringify(record.identity) !== JSON.stringify(identity))
     ) {
       throw managedError('invalid_intent_state', 'The candidate Intent state is invalid or mismatched.');
     }
-    intentPublication = { absolutePath, intentsDirectory, record };
+    if (record) intentPublication = { absolutePath, intentsDirectory, record };
     await assertContainedStateDirectory(repositoryRoot, intentsDirectory);
     const currentIntentSnapshot = await snapshot(absolutePath);
     const currentIntentHash = createHash('sha256')

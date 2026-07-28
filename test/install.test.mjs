@@ -1047,6 +1047,8 @@ test('an approved Intent rerenders from latest upstream through work order, resu
     const [managed] = Object.values(state.skills);
     assert.notEqual(managed.upstreamHash, managed.renderedHash);
     assert.equal(managed.renderedHash, managed.desiredRenderedHash);
+    const lock = JSON.parse(await readFile(join(repository, 'skills-lock.json'), 'utf8'));
+    assert.equal(lock.skills['alpha-skill'].computedHash, managed.upstreamHash);
     assert.match(managed.effectiveIntentsHash, /^[a-f0-9]{64}$/);
     const intentFiles = await readdir(join(repository, '.skills-manager/intents'));
     assert.match(intentFiles[0], /^alpha-skill__[a-f0-9]{8}\.json$/);
@@ -1483,6 +1485,437 @@ test('changed-file confirmation cannot approve later unreviewed candidate edits'
     assert.equal(continued.result.error.code, 'validation_failed');
     assert.match(continued.result.error.message, /changed after the Agent result/i);
     await assert.rejects(lstat(begun.result.data.workDir), { code: 'ENOENT' });
+  } finally {
+    await audit.close();
+  }
+});
+
+async function publishOneIntent(repository, fake, audit, intent, body = 'Apply the Intent.') {
+  const begun = await runCli(
+    ['intent-add', '--skill', 'alpha-skill', '--intent', intent, '--runtime', 'codex'],
+    {
+      cwd: repository,
+      env: {
+        FAKE_UPSTREAM_CALLS: fake.calls,
+        SKILLS_MANAGER_AUDIT_URL: audit.url,
+        SKILLS_MANAGER_NPX_PATH: fake.executable,
+      },
+    },
+  );
+  await runCli(['work-order', '--work-dir', begun.result.data.workDir], {
+    cwd: repository,
+    env: {},
+  });
+  await writeFile(
+    join(begun.result.data.candidate.root, 'SKILL.md'),
+    `---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n${body}\n`,
+  );
+  await runCli(
+    ['intent-result', '--work-dir', begun.result.data.workDir, '--result', 'applied'],
+    { cwd: repository, env: {} },
+  );
+  return runCli(['publish', '--work-dir', begun.result.data.workDir, '--accept-publication'], {
+    cwd: repository,
+    env: {},
+  });
+}
+
+test('update starts from latest upstream and reapplies every Effective Intent', async () => {
+  const repository = await temporaryDirectory('skills-manager-update-intent-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    await publishOneIntent(repository, fake, audit, 'Prefer concise examples.', 'Use concise examples.');
+    const updated = await runCli(
+      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+          FAKE_UPSTREAM_SKILL_CONTENT:
+            '---\nname: alpha-skill\ndescription: New upstream.\n---\n\n# New upstream structure\n',
+        },
+      },
+    );
+    assert.equal(updated.result.status, 'ready');
+    assert.equal(updated.result.data.operation.type, 'update');
+    assert.match(
+      await readFile(join(updated.result.data.candidate.root, 'SKILL.md'), 'utf8'),
+      /New upstream structure/,
+    );
+    const ordered = await runCli(['work-order', '--work-dir', updated.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    assert.equal(ordered.result.status, 'work_order');
+    assert.deepEqual(ordered.result.data.effectiveIntents.map(({ text }) => text), [
+      'Prefer concise examples.',
+    ]);
+    await writeFile(
+      join(updated.result.data.candidate.root, 'SKILL.md'),
+      '---\nname: alpha-skill\ndescription: New upstream.\n---\n\n# New upstream structure\n\nUse concise examples.\n',
+    );
+    const resulted = await runCli(
+      [
+        'intent-result',
+        '--work-dir',
+        updated.result.data.workDir,
+        '--results',
+        JSON.stringify([{ id: ordered.result.data.effectiveIntents[0].id, status: 'applied' }]),
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(resulted.result.status, 'needs_confirmation');
+    assert.equal(resulted.result.data.review.semanticOutcome.result, 'applied');
+    const published = await runCli(
+      ['publish', '--work-dir', updated.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(published.result.status, 'complete');
+    const state = JSON.parse(await readFile(join(repository, '.skills-manager/state.json'), 'utf8'));
+    const [managed] = Object.values(state.skills);
+    assert.notEqual(managed.upstreamHash, managed.renderedHash);
+    assert.equal(managed.renderedHash, managed.desiredRenderedHash);
+    const updatedLock = JSON.parse(await readFile(join(repository, 'skills-lock.json'), 'utf8'));
+    assert.equal(updatedLock.skills['alpha-skill'].computedHash, managed.upstreamHash);
+    assert.match(
+      await readFile(join(repository, '.agents/skills/alpha-skill/SKILL.md'), 'utf8'),
+      /New upstream structure[\s\S]*Use concise examples/,
+    );
+  } finally {
+    await audit.close();
+  }
+});
+
+test('update checks the installed Rendering hash before fetching upstream', async () => {
+  const repository = await temporaryDirectory('skills-manager-update-drift-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    await writeFile(
+      join(repository, '.agents/skills/alpha-skill/SKILL.md'),
+      '---\nname: alpha-skill\ndescription: Manual edit.\n---\n',
+    );
+    const updated = await runCli(
+      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+        },
+      },
+    );
+    assert.equal(updated.exitCode, 1);
+    assert.equal(updated.result.error.code, 'untracked_change');
+    const calls = (await readFile(fake.calls, 'utf8')).trim().split('\n');
+    assert.equal(calls.length, 1);
+  } finally {
+    await audit.close();
+  }
+});
+
+test('a bare upstream update skips semantic work and publishes after review', async () => {
+  const repository = await temporaryDirectory('skills-manager-update-bare-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const updated = await runCli(
+      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+          FAKE_UPSTREAM_SKILL_CONTENT:
+            '---\nname: alpha-skill\ndescription: Bare update.\n---\n\n# Bare update\n',
+        },
+      },
+    );
+    assert.equal(updated.result.status, 'needs_confirmation');
+    assert.equal(updated.result.data.review.semanticOutcome.result, 'not_required');
+    assert.deepEqual(updated.result.data.review.materialDiff, []);
+    const ordered = await runCli(['work-order', '--work-dir', updated.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    assert.equal(ordered.exitCode, 1);
+    assert.equal(ordered.result.error.code, 'invalid_continuation');
+    const published = await runCli(
+      ['publish', '--work-dir', updated.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(published.result.status, 'complete');
+  } finally {
+    await audit.close();
+  }
+});
+
+test('a no-change bare update completes without replacing the workspace Rendering', async () => {
+  const repository = await temporaryDirectory('skills-manager-update-noop-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const target = join(repository, '.agents/skills/alpha-skill');
+    const before = await lstat(target);
+    const updated = await runCli(
+      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+        },
+      },
+    );
+    assert.equal(updated.result.status, 'complete');
+    assert.equal(updated.result.data.noChange, true);
+    const after = await lstat(target);
+    assert.equal(after.ino, before.ino);
+    await assert.rejects(lstat(updated.result.data.workDir), { code: 'ENOENT' });
+  } finally {
+    await audit.close();
+  }
+});
+
+test('a no-change customized update skips a redundant semantic work order', async () => {
+  const repository = await temporaryDirectory('skills-manager-update-custom-noop-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    await publishOneIntent(repository, fake, audit, 'Prefer concise examples.', 'Use concise examples.');
+    const target = join(repository, '.agents/skills/alpha-skill');
+    const before = await lstat(target);
+    const updated = await runCli(
+      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+        },
+      },
+    );
+    assert.equal(updated.result.status, 'complete');
+    assert.equal(updated.result.data.noChange, true);
+    assert.equal((await lstat(target)).ino, before.ino);
+  } finally {
+    await audit.close();
+  }
+});
+
+test('update does not report no-change while desired and published Rendering hashes diverge', async () => {
+  const repository = await temporaryDirectory('skills-manager-update-desired-drift-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const statePath = join(repository, '.skills-manager/state.json');
+    const state = JSON.parse(await readFile(statePath, 'utf8'));
+    const [managed] = Object.values(state.skills);
+    managed.desiredRenderedHash = 'f'.repeat(64);
+    await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+    const updated = await runCli(
+      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+        },
+      },
+    );
+    assert.equal(updated.result.status, 'needs_confirmation');
+    assert.notEqual(updated.result.data.noChange, true);
+    const published = await runCli(
+      ['publish', '--work-dir', updated.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(published.result.status, 'complete');
+    const repaired = JSON.parse(await readFile(statePath, 'utf8'));
+    const [repairedManaged] = Object.values(repaired.skills);
+    assert.equal(repairedManaged.renderedHash, repairedManaged.desiredRenderedHash);
+  } finally {
+    await audit.close();
+  }
+});
+
+test('an update semantic conflict pauses and an explicitly adapted result can continue', async () => {
+  const repository = await temporaryDirectory('skills-manager-update-conflict-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    await publishOneIntent(repository, fake, audit, 'Never publish automatically.', 'Never publish automatically.');
+    await publishOneIntent(
+      repository,
+      fake,
+      audit,
+      'Include failure guidance.',
+      'Never publish automatically.\n\nInclude failure guidance.',
+    );
+    const updated = await runCli(
+      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+          FAKE_UPSTREAM_SKILL_CONTENT:
+            '---\nname: alpha-skill\ndescription: New behavior.\n---\n\nAlways publish automatically.\n',
+        },
+      },
+    );
+    const ordered = await runCli(['work-order', '--work-dir', updated.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    const byText = new Map(
+      ordered.result.data.effectiveIntents.map((intent) => [intent.text, intent.id]),
+    );
+    const conflict = await runCli(
+      [
+        'intent-result',
+        '--work-dir',
+        updated.result.data.workDir,
+        '--results',
+        JSON.stringify([
+          {
+            id: byText.get('Never publish automatically.'),
+            status: 'failed',
+            summary: 'Latest upstream requires automatic publication.',
+          },
+          { id: byText.get('Include failure guidance.'), status: 'applied' },
+        ]),
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(conflict.result.status, 'conflict');
+    assert.equal(conflict.result.data.reason, 'intent_failed');
+    assert.deepEqual(conflict.result.data.choices, ['revise', 'abort']);
+    assert.deepEqual(conflict.result.data.intents, [
+      {
+        id: byText.get('Never publish automatically.'),
+        text: 'Never publish automatically.',
+        status: 'failed',
+        summary: 'Latest upstream requires automatic publication.',
+      },
+    ]);
+    const resumed = await runCli(
+      [
+        'continue',
+        '--work-dir',
+        updated.result.data.workDir,
+        '--accept-semantic-revision',
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(resumed.result.status, 'work_order');
+    assert.equal(resumed.result.data.resolution, 'revise');
+    await writeFile(
+      join(updated.result.data.candidate.root, 'SKILL.md'),
+      '---\nname: alpha-skill\ndescription: New behavior.\n---\n\nAsk before publishing.\n\nInclude failure guidance.\n',
+    );
+    const adapted = await runCli(
+      [
+        'intent-result',
+        '--work-dir',
+        updated.result.data.workDir,
+        '--results',
+        JSON.stringify([
+          { id: byText.get('Never publish automatically.'), status: 'adapted' },
+          { id: byText.get('Include failure guidance.'), status: 'applied' },
+        ]),
+        '--summary',
+        'Resolved the upstream contradiction by requiring confirmation.',
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(adapted.result.status, 'needs_confirmation');
+    assert.equal(adapted.result.data.review.semanticOutcome.result, 'adapted');
+  } finally {
+    await audit.close();
+  }
+});
+
+test('an obsolete update result requires an explicit keep decision before review', async () => {
+  const repository = await temporaryDirectory('skills-manager-update-obsolete-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    await publishOneIntent(repository, fake, audit, 'Prefer concise examples.', 'Use concise examples.');
+    const updated = await runCli(
+      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      {
+        cwd: repository,
+        env: {
+          FAKE_UPSTREAM_CALLS: fake.calls,
+          SKILLS_MANAGER_AUDIT_URL: audit.url,
+          SKILLS_MANAGER_NPX_PATH: fake.executable,
+          FAKE_UPSTREAM_SKILL_CONTENT:
+            '---\nname: alpha-skill\ndescription: Upstream is concise.\n---\n\nUse concise examples.\n',
+        },
+      },
+    );
+    const ordered = await runCli(['work-order', '--work-dir', updated.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+    const intentId = ordered.result.data.effectiveIntents[0].id;
+    const obsolete = await runCli(
+      [
+        'intent-result',
+        '--work-dir',
+        updated.result.data.workDir,
+        '--results',
+        JSON.stringify([
+          { id: intentId, status: 'obsolete', summary: 'Latest upstream already satisfies it.' },
+        ]),
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(obsolete.result.status, 'conflict');
+    assert.deepEqual(obsolete.result.data.choices, ['keep', 'abort']);
+    const kept = await runCli(
+      ['continue', '--work-dir', updated.result.data.workDir, '--keep-obsolete-intents'],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(kept.result.status, 'work_order');
+    assert.equal(kept.result.data.resolution, 'keep');
+    const applied = await runCli(
+      [
+        'intent-result',
+        '--work-dir',
+        updated.result.data.workDir,
+        '--results',
+        JSON.stringify([{ id: intentId, status: 'applied' }]),
+      ],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(applied.result.status, 'needs_confirmation');
+    assert.deepEqual(applied.result.data.review.materialDiff, []);
   } finally {
     await audit.close();
   }
