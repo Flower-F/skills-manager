@@ -24,6 +24,10 @@ _Avoid_: Automatic migration, diff import
 One isolated run from fetching upstream content through intent application, validation, review, and publication or abort. Its working state lives in the operating system's temporary directory and may be discarded; restarting from upstream is the recovery strategy.
 _Avoid_: Durable transaction, resumable workflow
 
+**Recovery guarantee**:
+The promise that, when mutating invocations are serialized by the caller, a later invocation can deterministically reconcile complete Renderings and authoritative state after a manager process is interrupted. It excludes concurrent mutation and persistence across sudden operating-system or hardware power loss.
+_Avoid_: Power-loss durability, crash-proof storage
+
 **Conflict**:
 A state in which the requested operation would discard, contradict, or ambiguously preserve user-approved semantic state. The CLI must stop and present concrete choices; it cannot choose a default on the user's behalf.
 _Avoid_: Technical failure, warning

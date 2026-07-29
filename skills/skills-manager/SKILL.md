@@ -1,6 +1,6 @@
 ---
 name: skills-manager
-description: Manage Agent skills through one deterministic CLI. Use when the user wants to inspect runtime topology; discover, assess, install, update, or remove a managed skill; list or change customization Intents; recover an Untracked change through Archaeology; recover an interrupted publication; or update Skills Manager itself across project or global scope.
+description: Manage Agent skills. Use for installing, customizing, updating, inspecting, or removing skills across runtimes and scopes.
 ---
 
 # Skills Manager

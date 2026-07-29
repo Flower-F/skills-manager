@@ -1,4 +1,4 @@
 interface:
   display_name: "Skills Manager"
-  short_description: "Inspect Agent skill directories and link topology"
-  default_prompt: "Use $skills-manager to inspect this repository’s current skill environment."
+  short_description: "Manage Agent skills and customizations"
+  default_prompt: "Use $skills-manager to manage an Agent skill in this project."
