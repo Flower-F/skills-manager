@@ -10,7 +10,7 @@ Add a project Intent by default:
 node <skill-directory>/scripts/skills-manager.mjs intent-add --skill <installed-skill> --intent <semantic-outcome> --runtime <runtime-id>
 ```
 
-Add `--scope global` only for an outcome the user wants inherited by every Rendering of the same normalized Skill identity. If `project_rendering_required` is returned, explain `data.resolutions`: when the user selects `create_project_rendering`, load [inspect-install.md](inspect-install.md#discover-and-assess) and complete normal assessment and installation; use global scope only when the user selects `promote_to_global`.
+Add `--scope global` only for an outcome the user wants inherited by every Rendering of the same normalized Skill identity. If `project_rendering_required` is returned, explain `data.resolutions`: when the user selects `create_project_rendering`, load [inspect-install.md](inspect-install.md#discover-and-assess) and complete normal assessment and installation; use global scope only when the user selects `promote_to_global`. After completing the selected resolution, restart `intent-add` with the resolved scope so it acquires a fresh baseline and actually creates the Intent.
 
 For security `needs_confirmation`, load [inspect-install.md](inspect-install.md#discover-and-assess) and resume that exact attempt through its risk-confirmation command. On `ready`, request the semantic boundary:
 

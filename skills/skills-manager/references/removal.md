@@ -13,6 +13,8 @@ Explain the returned identity, physical targets, active and retained Intents, pr
 - Ambiguous identity routes through the returned scope-aware `identity-resolve` command described in [intents.md](intents.md).
 - A recorded project Untracked change routes through Archaeology in [update-recovery.md](update-recovery.md). Global drift, changed topology links, and unrecorded extra copies must be reconciled before removal can proceed.
 
+After completing either routed resolution, restart the original scoped `remove` command without `--confirm-removal` and obtain a fresh preview and confirmation token.
+
 After the user confirms the final preview, rerun removal with `--confirm-removal`, the preview's exact `--source`, `--upstream-skill`, `--confirmation-token`, and any selected Intent/exposure options. The token binds approval to the reviewed semantic state, other-scope exposure, topology, and lock entry; a changed preview requires fresh confirmation.
 
 The CLI delegates the base artifact to the pinned upstream adapter, then reconciles recorded targets, managed state, and the single lock entry. Removal is complete only when the latest envelope is terminal `complete`, the selected-scope Rendering is absent, and installations in every other scope still resolve as reported.
