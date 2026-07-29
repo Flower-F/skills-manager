@@ -186,6 +186,37 @@ export async function verifyManagedRendering({ repositoryRoot, managed }) {
   return locateManagedRendering({ repositoryRoot, managed, expectedHash: managed.renderedHash });
 }
 
+export async function locateManagedRenderingForRegeneration({ repositoryRoot, managed }) {
+  const resolvedRepositoryRoot = await realpath(repositoryRoot);
+  const targets = [];
+  const existingTargets = [];
+  const missingTargets = [];
+  for (const storedTarget of managed.physicalTargets) {
+    const target = resolve(resolvedRepositoryRoot, storedTarget);
+    const info = await lstat(target).catch((error) => {
+      if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null;
+      throw error;
+    });
+    targets.push(target);
+    if (!info) {
+      missingTargets.push(target);
+      continue;
+    }
+    if (!info.isDirectory() || info.isSymbolicLink()) {
+      throw managedError('untracked_change', 'A managed Rendering target is not a real directory.');
+    }
+    const resolvedTarget = await realpath(target);
+    if (!isContained(resolvedRepositoryRoot, resolvedTarget)) {
+      throw managedError('invalid_publication_target', 'A managed Rendering target resolves outside the project.');
+    }
+    if ((await renderedHashForRoot(resolvedTarget)) !== managed.renderedHash) {
+      throw managedError('untracked_change', 'A remaining managed Rendering does not match managed state.');
+    }
+    existingTargets.push(resolvedTarget);
+  }
+  return { targets, existingTargets, missingTargets };
+}
+
 export async function createCandidateSnapshot(root) {
   const entries = await enumerateTree(root);
   return entries
@@ -844,6 +875,12 @@ export async function publishAttempt({ workDir }) {
     }
     for (const target of targets) {
       const info = await lstat(target).catch(() => null);
+      const storedTarget = relative(repositoryRoot, target).split('\\').join('/');
+      const regenerationMayRestoreMissing =
+        manifest.operation.recovery === 'regeneration_required' &&
+        existingManagedSkill.publicationPending &&
+        existingManagedSkill.physicalTargets.includes(storedTarget);
+      if (!info && regenerationMayRestoreMissing) continue;
       if (!info?.isDirectory() || info.isSymbolicLink()) {
         throw managedError('untracked_change', 'A managed Rendering target is missing or no longer a real directory.');
       }
@@ -867,7 +904,7 @@ export async function publishAttempt({ workDir }) {
   const managedSkill = {
     identity,
     installName: manifest.operation.skill,
-    scope: manifest.operation.publicationScope || 'project',
+    scope: manifest.operation.publicationScope || manifest.operation.scope || 'project',
     upstreamHash: validation.lockEntry.computedHash,
     renderedHash: validation.renderedHash,
     desiredRenderedHash: validation.renderedHash,
@@ -1133,7 +1170,7 @@ export async function publishAttempt({ workDir }) {
         await mkdir(replacement.absolutePath);
         replacedDirectories.push(replacement);
       }
-      if (manifest.operation.type !== 'install') {
+      if (manifest.operation.type !== 'install' && (await lstat(targets[index]).catch(() => null))) {
         const backup = join(
           dirname(targets[index]),
           `.${manifest.operation.skill}.skills-manager-backup-${manifest.nonce}-${index}`,

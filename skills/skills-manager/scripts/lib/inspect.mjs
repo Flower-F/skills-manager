@@ -1,6 +1,6 @@
 // Observe filesystem state without mutating it.
 import { lstat, readlink, realpath } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
   RUNTIME_REGISTRY_VERSION,
   SUPPORTED_SKILLS_CLI_VERSION,
@@ -37,6 +37,18 @@ async function pathState(path) {
     if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return { kind: 'missing' };
     throw error;
   }
+}
+
+async function canonicalPathThroughExistingAncestor(path) {
+  let existing = path;
+  const suffix = [];
+  while (!(await lstat(existing).catch(() => null))) {
+    const parent = dirname(existing);
+    if (parent === existing) return path;
+    suffix.unshift(basename(existing));
+    existing = parent;
+  }
+  return join(await realpath(existing), ...suffix);
 }
 
 function topologyFor(targets) {
@@ -127,8 +139,16 @@ export async function inspectEnvironment({ repositoryRoot, currentRuntime, scope
   }
 
   const grouped = new Map();
+  const scopedDirectories = new Map();
+  for (const { runtime } of candidates) {
+    const directory = skillsDirectoryFor(runtime, scope, repositoryRoot);
+    scopedDirectories.set(
+      runtime.id,
+      scope === 'global' ? await canonicalPathThroughExistingAncestor(directory) : directory,
+    );
+  }
   for (const candidate of candidates) {
-    const path = skillsDirectoryFor(candidate.runtime, scope, repositoryRoot);
+    const path = scopedDirectories.get(candidate.runtime.id);
     const existing = grouped.get(path) || { path, runtimes: [] };
     existing.runtimes.push(candidate.runtime.id);
     grouped.set(path, existing);
@@ -158,7 +178,7 @@ export async function inspectEnvironment({ repositoryRoot, currentRuntime, scope
 
   const runtimes = candidates
     .map(({ runtime, evidence }) => {
-      const skillsDirectory = skillsDirectoryFor(runtime, scope, repositoryRoot);
+      const skillsDirectory = scopedDirectories.get(runtime.id);
       const target = targets.findIndex(({ path }) => path === skillsDirectory);
       const result = {
         id: runtime.id,

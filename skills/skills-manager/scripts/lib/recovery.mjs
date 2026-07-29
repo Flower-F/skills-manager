@@ -156,17 +156,23 @@ async function restorePreparedTargets(prepared) {
 async function publishPreparedTargets(root, prepared, finalize) {
   try {
     for (const item of prepared) {
-      await assertContainedExistingAncestor(root, item.target);
+      await assertContainedExistingAncestor(root, dirname(item.target));
       await assertContainedExistingAncestor(root, item.sibling);
-      if ((await renderedHashForRoot(item.target)) !== item.expectedCurrentHash) {
+      const current = await pathInfo(item.target);
+      const baselineChanged = item.expectedCurrentHash === null
+        ? current !== null
+        : !current || (await renderedHashForRoot(item.target)) !== item.expectedCurrentHash;
+      if (baselineChanged) {
         throw recoveryConflict({
           reason: 'untracked_change',
           target: item.target,
           choices: ['recover_with_archaeology', 'cancel'],
         });
       }
-      await rename(item.target, item.backup);
-      item.displaced = true;
+      if (current) {
+        await rename(item.target, item.backup);
+        item.displaced = true;
+      }
       await rename(item.sibling, item.target);
       item.activated = true;
     }
@@ -279,11 +285,8 @@ async function observeManagedTargets(root, managed, pending) {
       candidates.find(({ hash }) => hash === managed.desiredRenderedHash) ||
       candidates.find(({ hash }) => hash === managed.renderedHash);
     if (!selected) {
-      throw recoveryConflict({
-        reason: 'interrupted_target_missing',
-        target,
-        choices: ['regenerate', 'cancel'],
-      });
+      observations.push({ target, hash: null, missing: true });
+      continue;
     }
     observations.push({ target, hash: selected.hash, restoreFrom: selected.path });
   }
@@ -375,7 +378,7 @@ export async function recoverInterruptedPublication({ root, managed }) {
     return { recovery: 'not_required' };
   }
   const allowed = new Set([managed.renderedHash, managed.desiredRenderedHash]);
-  const unexplained = observed.filter(({ hash }) => !allowed.has(hash));
+  const unexplained = observed.filter(({ hash, missing }) => !missing && !allowed.has(hash));
   if (unexplained.length > 0) {
     throw recoveryConflict({
       reason: 'untracked_change',
@@ -397,12 +400,13 @@ export async function recoverInterruptedPublication({ root, managed }) {
   }
   await restoreInterruptedArtifacts(root, observed);
   if (desired.length === 0 || !lockCoherent) {
-    await repairTopologyLinks(root, missingLinks);
     await cleanupArtifacts(root, artifacts);
     return {
       recovery: 'regeneration_required',
       desiredRenderedHash: managed.desiredRenderedHash,
       currentRenderedHash: managed.renderedHash,
+      missingTargets: observed.filter(({ missing }) => missing).map(({ target }) => target),
+      missingLinks,
     };
   }
   await currentStateBaseline(root, managed);

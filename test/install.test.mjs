@@ -631,6 +631,56 @@ test('an empty repository publishes only to the active runtime default directory
   }
 });
 
+test('an explicitly global installation publishes state and Rendering only under HOME', async () => {
+  const repository = await temporaryDirectory('skills-manager-global-install-project-');
+  const globalHome = await temporaryDirectory('skills-manager-global-install-home-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    HOME: globalHome,
+    CODEX_HOME: join(globalHome, '.codex'),
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+  };
+  try {
+    const assessed = await runCli(
+      [
+        'assess',
+        '--scope',
+        'global',
+        '--source',
+        'example/skills',
+        '--skill',
+        'alpha-skill',
+        '--runtime',
+        'codex',
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(assessed.result.status, 'ready', JSON.stringify(assessed.result));
+    const validated = await runCli(['validate', '--work-dir', assessed.result.data.workDir], {
+      cwd: repository,
+      env: environment,
+    });
+    assert.equal(validated.result.status, 'needs_confirmation', JSON.stringify(validated.result));
+    const published = await runCli(
+      ['publish', '--work-dir', assessed.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(published.result.status, 'complete', JSON.stringify(published.result));
+    assert.ok(await lstat(join(globalHome, '.codex/skills/alpha-skill/SKILL.md')));
+    const state = JSON.parse(await readFile(join(globalHome, '.skills-manager/state.json'), 'utf8'));
+    const [managed] = Object.values(state.skills);
+    assert.equal(managed.scope, 'global');
+    assert.deepEqual(managed.physicalTargets, ['.codex/skills/alpha-skill']);
+    await assert.rejects(lstat(join(repository, '.skills-manager/state.json')), { code: 'ENOENT' });
+  } finally {
+    await audit.close();
+  }
+});
+
 test('multiple represented runtimes prefer one canonical Rendering with directory links', async () => {
   const repository = await temporaryDirectory('skills-manager-new-canonical-links-');
   await mkdir(join(repository, '.git'));
@@ -987,7 +1037,7 @@ async function installManagedAlpha(repository, fake, audit) {
   });
 }
 
-async function cloneManagedAlphaToGlobal(repository, globalHome) {
+async function cloneManagedSkillToGlobal(repository, globalHome, skill) {
   const projectState = JSON.parse(
     await readFile(join(repository, '.skills-manager/state.json'), 'utf8'),
   );
@@ -995,7 +1045,7 @@ async function cloneManagedAlphaToGlobal(repository, globalHome) {
   const globalManaged = {
     ...projectManaged,
     scope: 'global',
-    physicalTargets: ['.codex/skills/alpha-skill'],
+    physicalTargets: [`.codex/skills/${skill}`],
     topologyLinks: [],
   };
   await mkdir(join(globalHome, '.skills-manager'), { recursive: true });
@@ -1005,12 +1055,16 @@ async function cloneManagedAlphaToGlobal(repository, globalHome) {
   );
   await mkdir(join(globalHome, '.codex/skills'), { recursive: true });
   await cp(
-    join(repository, '.agents/skills/alpha-skill'),
-    join(globalHome, '.codex/skills/alpha-skill'),
+    join(repository, `.agents/skills/${skill}`),
+    join(globalHome, `.codex/skills/${skill}`),
     { recursive: true },
   );
   await cp(join(repository, 'skills-lock.json'), join(globalHome, 'skills-lock.json'));
   return globalManaged;
+}
+
+async function cloneManagedAlphaToGlobal(repository, globalHome) {
+  return cloneManagedSkillToGlobal(repository, globalHome, 'alpha-skill');
 }
 
 async function installManagedAlphaCopies(repository, fake, audit) {
@@ -1873,7 +1927,7 @@ test('update does not report no-change while desired and published Rendering has
 });
 
 test('update heals interrupted desired Renderings and rejects unexplained divergent copies', async (t) => {
-  for (const scenario of ['one_desired_copy', 'all_desired_copies', 'unexplained_copy']) {
+  for (const scenario of ['one_desired_copy', 'missing_copy', 'all_desired_copies', 'unexplained_copy']) {
     await t.test(scenario, async () => {
       const repository = await temporaryDirectory(`skills-manager-recovery-${scenario}-`);
       await mkdir(join(repository, '.git'));
@@ -1893,7 +1947,9 @@ test('update heals interrupted desired Renderings and rejects unexplained diverg
           '---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n# Desired complete Rendering\n',
         );
         const desiredHash = await renderingHash(canonical);
-        if (scenario === 'all_desired_copies') {
+        if (scenario === 'missing_copy') {
+          await rm(copy, { recursive: true });
+        } else if (scenario === 'all_desired_copies') {
           await cp(canonical, copy, { recursive: true, force: true });
         } else if (scenario === 'unexplained_copy') {
           await writeFile(join(copy, 'SKILL.md'), '# neither old nor desired\n');
@@ -1930,6 +1986,52 @@ test('update heals interrupted desired Renderings and rejects unexplained diverg
         await audit.close();
       }
     });
+  }
+});
+
+test('interrupted publication without any complete copy regenerates from latest upstream', async () => {
+  const repository = await temporaryDirectory('skills-manager-recovery-regenerate-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+    FAKE_UPSTREAM_SKILL_CONTENT:
+      '---\nname: alpha-skill\ndescription: Regenerated upstream.\n---\n\n# Regenerated\n',
+  };
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const statePath = join(repository, '.skills-manager/state.json');
+    const state = JSON.parse(await readFile(statePath, 'utf8'));
+    const [managed] = Object.values(state.skills);
+    managed.desiredRenderedHash = 'f'.repeat(64);
+    managed.publicationPending = true;
+    await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+    await rm(join(repository, '.agents/skills/alpha-skill'), { recursive: true });
+
+    const regenerated = await runCli(
+      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(regenerated.result.status, 'needs_confirmation', JSON.stringify(regenerated.result));
+    assert.equal(regenerated.result.data.operation.recovery, 'regeneration_required');
+    const published = await runCli(
+      ['publish', '--work-dir', regenerated.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(published.result.status, 'complete', JSON.stringify(published.result));
+    assert.match(
+      await readFile(join(repository, '.agents/skills/alpha-skill/SKILL.md'), 'utf8'),
+      /Regenerated upstream/,
+    );
+    const recoveredState = JSON.parse(await readFile(statePath, 'utf8'));
+    const [recoveredManaged] = Object.values(recoveredState.skills);
+    assert.equal(recoveredManaged.publicationPending, undefined);
+    assert.equal(recoveredManaged.renderedHash, recoveredManaged.desiredRenderedHash);
+  } finally {
+    await audit.close();
   }
 });
 
@@ -4589,6 +4691,139 @@ test('self-update publishes completely and requires an immediate Agent restart',
       calls.every(({ argv }) => argv[0] === '-y' && argv[1] === 'skills@1.5.20'),
       true,
     );
+  } finally {
+    await audit.close();
+  }
+});
+
+test('global self-update changes only the selected global manager Rendering', async () => {
+  const repository = await temporaryDirectory('skills-manager-global-self-update-');
+  const globalHome = await temporaryDirectory('skills-manager-global-home-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    HOME: globalHome,
+    CODEX_HOME: join(globalHome, '.codex'),
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+  };
+  try {
+    const assessed = await runCli(
+      ['assess', '--source', 'example/skills', '--skill', 'skills-manager', '--runtime', 'codex'],
+      { cwd: repository, env: environment },
+    );
+    await runCli(['validate', '--work-dir', assessed.result.data.workDir], {
+      cwd: repository,
+      env: environment,
+    });
+    await runCli(['publish', '--work-dir', assessed.result.data.workDir, '--accept-publication'], {
+      cwd: repository,
+      env: environment,
+    });
+    await cloneManagedSkillToGlobal(repository, globalHome, 'skills-manager');
+    const projectBefore = await readFile(
+      join(repository, '.agents/skills/skills-manager/SKILL.md'),
+      'utf8',
+    );
+
+    const updated = await runCli(
+      ['update', '--scope', 'global', '--skill', 'skills-manager', '--runtime', 'codex'],
+      {
+        cwd: repository,
+        env: {
+          ...environment,
+          FAKE_UPSTREAM_SKILL_CONTENT:
+            '---\nname: skills-manager\ndescription: Global manager update.\n---\n\n# Global update\n',
+        },
+      },
+    );
+    assert.equal(updated.result.status, 'needs_confirmation', JSON.stringify(updated.result));
+    assert.equal(updated.result.data.operation.publicationScope, 'global');
+    const published = await runCli(
+      ['publish', '--work-dir', updated.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(published.result.status, 'restart_required');
+    assert.match(
+      await readFile(join(globalHome, '.codex/skills/skills-manager/SKILL.md'), 'utf8'),
+      /Global manager update/,
+    );
+    assert.equal(
+      await readFile(join(repository, '.agents/skills/skills-manager/SKILL.md'), 'utf8'),
+      projectBefore,
+    );
+  } finally {
+    await audit.close();
+  }
+});
+
+test('a manager Intent mutation commits with restart_required as terminal publication', async () => {
+  const repository = await temporaryDirectory('skills-manager-self-intent-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+  };
+  try {
+    const assessed = await runCli(
+      ['assess', '--source', 'example/skills', '--skill', 'skills-manager', '--runtime', 'codex'],
+      { cwd: repository, env: environment },
+    );
+    await runCli(['validate', '--work-dir', assessed.result.data.workDir], {
+      cwd: repository,
+      env: environment,
+    });
+    await runCli(['publish', '--work-dir', assessed.result.data.workDir, '--accept-publication'], {
+      cwd: repository,
+      env: environment,
+    });
+
+    const begun = await runCli(
+      [
+        'intent-add',
+        '--skill',
+        'skills-manager',
+        '--intent',
+        'Keep manager guidance concise.',
+        '--runtime',
+        'codex',
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(begun.result.status, 'ready', JSON.stringify(begun.result));
+    const ordered = await runCli(['work-order', '--work-dir', begun.result.data.workDir], {
+      cwd: repository,
+      env: environment,
+    });
+    await writeFile(
+      join(begun.result.data.candidate.root, 'SKILL.md'),
+      '---\nname: skills-manager\ndescription: Candidate description.\n---\n\n# Concise manager\n',
+    );
+    const reviewed = await runCli(
+      ['intent-result', '--work-dir', begun.result.data.workDir, '--result', 'applied'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(reviewed.result.status, 'needs_confirmation', JSON.stringify(reviewed.result));
+    const published = await runCli(
+      ['publish', '--work-dir', begun.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(published.result.status, 'restart_required');
+    assert.equal(published.result.data.restartRequired, true);
+    const state = JSON.parse(await readFile(join(repository, '.skills-manager/state.json'), 'utf8'));
+    const [managed] = Object.values(state.skills);
+    assert.equal(managed.renderedHash, managed.desiredRenderedHash);
+    const listed = await runCli(['intent-list', '--skill', 'skills-manager'], {
+      cwd: repository,
+      env: environment,
+    });
+    assert.equal(listed.result.data.intents[0].text, 'Keep manager guidance concise.');
+    assert.equal(ordered.result.data.effectiveIntents.length, 1);
   } finally {
     await audit.close();
   }

@@ -7,6 +7,7 @@ import {
   createCandidateSnapshot,
   diffCandidateSnapshots,
   locateManagedRendering,
+  locateManagedRenderingForRegeneration,
   readManagedState,
   renderedHashForRoot,
   validateAttempt,
@@ -218,8 +219,17 @@ async function currentManagedForOperation(manifest) {
     error.data = { reason: 'operation_baseline_changed', choices: ['restart', 'cancel'] };
     throw error;
   }
+  let existingTargets;
   const targets =
-    manifest.operation.type === 'archaeology'
+    manifest.operation.recovery === 'regeneration_required'
+      ? await locateManagedRenderingForRegeneration({
+          repositoryRoot: manifest.repositoryRoot,
+          managed: matches[0],
+        }).then((observation) => {
+          existingTargets = observation.existingTargets;
+          return observation.targets;
+        })
+      : manifest.operation.type === 'archaeology'
       ? await locateManagedRendering({
           repositoryRoot: manifest.repositoryRoot,
           managed: matches[0],
@@ -239,7 +249,7 @@ async function currentManagedForOperation(manifest) {
       });
     }
   }
-  return { managed: matches[0], targets };
+  return { managed: matches[0], targets, existingTargets: existingTargets || targets };
 }
 
 async function assertCurrentIntentBaseline(manifest, managed) {
@@ -673,11 +683,30 @@ export async function beginIntentAdd({
 export async function beginUpdate({
   repositoryRoot,
   skill,
+  scope = 'project',
   currentRuntime,
   environment,
 }) {
-  const managed = await requireManagedSkill(repositoryRoot, skill, environment);
-  const recovery = await recoverInterruptedPublication({ root: repositoryRoot, managed });
+  const renderingRoot = await realpath(scopeRootFor(scope, repositoryRoot, environment));
+  const state = await readManagedState(renderingRoot);
+  const matches = Object.values(state?.skills || {}).filter((entry) => entry.installName === skill);
+  if (matches.length > 1) {
+    throw intentConflict({
+      reason: 'ambiguous_skill_identity',
+      installName: skill,
+      scope,
+      identities: matches.map(({ identity }) => normalizedIdentity(identity)),
+      choices: ['migrate', 'manage_clean', 'cancel'],
+    });
+  }
+  if (matches.length !== 1) {
+    throw intentError(
+      'managed_skill_not_found',
+      `Expected exactly one ${scope} managed Skill named ${skill}.`,
+    );
+  }
+  const managed = matches[0];
+  const recovery = await recoverInterruptedPublication({ root: renderingRoot, managed });
   if (recovery.recovery === 'healed') {
     const restartRequired = managed.installName === 'skills-manager';
     return {
@@ -687,36 +716,52 @@ export async function beginUpdate({
       ...recovery,
     };
   }
-  await locateManagedRendering({ repositoryRoot, managed });
-  try {
-    await verifyManagedRendering({ repositoryRoot, managed });
-  } catch (error) {
-    if (error.code !== 'untracked_change') throw error;
-    throw intentConflict({
-      reason: 'untracked_change',
-      installName: skill,
-      identity: managed.identity,
-      explanation:
-        'Installed bytes differ from the recorded Rendering and have no recorded semantic Intent. Did you author this change intentionally?',
-      choices: ['recover', 'decline', 'cancel'],
-    });
+  if (recovery.recovery !== 'regeneration_required') {
+    await locateManagedRendering({ repositoryRoot: renderingRoot, managed });
+    try {
+      await verifyManagedRendering({ repositoryRoot: renderingRoot, managed });
+    } catch (error) {
+      if (error.code !== 'untracked_change') throw error;
+      throw intentConflict({
+        reason: 'untracked_change',
+        installName: skill,
+        identity: managed.identity,
+        explanation:
+          'Installed bytes differ from the recorded Rendering and have no recorded semantic Intent. Did you author this change intentionally?',
+        choices: ['recover', 'decline', 'cancel'],
+      });
+    }
   }
-  const scoped = await readScopedIntents({
+  let scoped = await readScopedIntents({
     repositoryRoot,
     managed,
     environment,
+    resolveEffective: scope === 'project',
   });
-  const intentRecord = scoped.project;
+  if (scope === 'global') {
+    scoped = {
+      ...scoped,
+      effectiveIntents: scoped.global.intents
+        .filter(({ state: intentState }) => intentState === 'active')
+        .map((intent) => ({ ...intent, scopes: ['global'] })),
+      baselines: scoped.baselines.filter(({ scope: baselineScope }) => baselineScope === 'global'),
+    };
+  }
+  const intentRecord = scoped[scope];
   const effectiveIntents = scoped.effectiveIntents;
   const assessed = await assessCandidate({
     source: managed.identity.source,
     skill,
     currentRuntime,
-    scope: managed.scope,
-    repositoryRoot,
+    scope,
+    repositoryRoot: renderingRoot,
     operationType: 'update',
     operationDetails: {
       identity: managed.identity,
+      publicationScope: scope,
+      ...(recovery.recovery === 'regeneration_required'
+        ? { recovery: 'regeneration_required' }
+        : {}),
       intents: intentRecord.intents,
       effectiveIntents,
       intentStateRelativePath: intentRecord.relativePath,
@@ -1242,14 +1287,16 @@ export async function prepareUpdateAttempt({ workDir }) {
   if (manifest.phase !== 'assessed' || !isManagedRenderOperation(manifest.operation.type)) {
     throw intentError('invalid_continuation', 'This attempt is not ready to prepare an Update.');
   }
-  const { managed, targets } = await currentManagedForOperation(manifest);
+  const { managed, targets, existingTargets } = await currentManagedForOperation(manifest);
   await assertCurrentIntentBaseline(manifest, managed);
   const baselineValidation = await validateCandidate({
     candidateRoot: manifest.candidateRoot,
     workDir: resolvedWorkDir,
     operation: manifest.operation,
   });
-  const currentRenderingSnapshot = await createCandidateSnapshot(targets[0]);
+  const currentRenderingSnapshot = existingTargets.length > 0
+    ? await createCandidateSnapshot(existingTargets[0])
+    : [];
   const baselineSnapshot = await createCandidateSnapshot(manifest.candidateRoot);
   const nextEffectiveIntentsHash = effectiveIntentsHash(manifest.operation.effectiveIntents);
   if (

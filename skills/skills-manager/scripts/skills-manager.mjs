@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { lstat } from 'node:fs/promises';
+import { lstat, realpath } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -68,7 +68,7 @@ const COMMANDS = {
     '--source',
     '--upstream-skill',
   ]),
-  update: command(['--runtime', '--skill']),
+  update: command(['--runtime', '--scope', '--skill']),
   validate: command(['--work-dir'], false),
   'work-order': command(['--work-dir'], false),
 };
@@ -483,6 +483,7 @@ async function main() {
       const data = await beginUpdate({
         repositoryRoot: await findRepositoryRoot(process.cwd()),
         skill: parsed.options.skill,
+        scope: parsed.options.scope,
         currentRuntime: parsed.options.runtime,
         environment: process.env,
       });
@@ -530,13 +531,22 @@ async function main() {
         error.code = 'invalid_arguments';
         throw error;
       }
+      const repositoryRoot = await findRepositoryRoot(process.cwd());
+      const publicationRoot = parsed.options.scope === 'global'
+        ? await realpath(process.env.HOME || '').catch(() => null)
+        : repositoryRoot;
+      if (!publicationRoot) {
+        const error = new Error('Global installation requires an available HOME directory.');
+        error.code = 'missing_global_root';
+        throw error;
+      }
       const { assessCandidate } = await import('./lib/upstream.mjs');
       const data = await assessCandidate({
         source: parsed.options.source,
         skill: parsed.options.skill,
         currentRuntime: parsed.options.runtime,
         scope: parsed.options.scope,
-        repositoryRoot: await findRepositoryRoot(process.cwd()),
+        repositoryRoot: publicationRoot,
         environment: process.env,
       });
       writeEnvelope({
