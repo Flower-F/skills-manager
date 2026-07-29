@@ -198,13 +198,12 @@ export async function inspectManagedIntentAlignment({
   const installations = [];
   for (const managed of Object.values(state?.skills || {})) {
     if (managed.scope !== scope) continue;
-    const scoped = await readScopedIntents({ repositoryRoot, managed, environment });
     const effectiveIntents = scope === 'global'
       ? effectiveIntentsFor(
           { intents: [], suppressedGlobalIntentIds: [] },
-          scoped.global,
+          await readIntentRecord(scopeRoot, managed),
         )
-      : scoped.effectiveIntents;
+      : (await readScopedIntents({ repositoryRoot, managed, environment })).effectiveIntents;
     const currentEffectiveIntentsHash = effectiveIntentsHash(effectiveIntents);
     const mismatch = currentEffectiveIntentsHash !== managed.effectiveIntentsHash;
     installations.push({

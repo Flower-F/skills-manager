@@ -2265,6 +2265,21 @@ test('Inspect reports an Intent-first interruption and Update reconciles the Ren
       ],
     );
 
+    const unexplainedArtifact = join(
+      repository,
+      '.agents/skills/.alpha-skill.skills-manager-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-0',
+    );
+    await mkdir(unexplainedArtifact);
+    await writeFile(join(unexplainedArtifact, 'user.txt'), 'preserve me\n');
+    const blocked = await runCli(['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME], {
+      cwd: repository,
+      env: environment,
+    });
+    assert.equal(blocked.result.status, 'conflict', JSON.stringify(blocked.result));
+    assert.equal(blocked.result.data.reason, 'untracked_change');
+    assert.equal(await readFile(join(unexplainedArtifact, 'user.txt'), 'utf8'), 'preserve me\n');
+    await rm(unexplainedArtifact, { recursive: true });
+
     const update = await runCli(['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME], {
       cwd: repository,
       env: environment,
@@ -2291,6 +2306,51 @@ test('Inspect reports an Intent-first interruption and Update reconciles the Ren
       env: environment,
     });
     assert.equal(reinspected.result.data.managed.installations[0].alignment, 'current');
+    assert.equal(
+      (await readdir(join(repository, '.agents/skills'))).some((name) =>
+        name.includes('.skills-manager-'),
+      ),
+      false,
+    );
+  } finally {
+    await audit.close();
+  }
+});
+
+test('global Inspect ignores a malformed project Intent record for the same managed Skill', async () => {
+  const repository = await temporaryDirectory('skills-manager-global-inspect-scope-');
+  const globalHome = await temporaryDirectory('skills-manager-global-inspect-home-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const globalManaged = await cloneManagedAlphaToGlobal(repository, globalHome);
+    const stateKey = Object.keys(
+      JSON.parse(await readFile(join(repository, '.skills-manager/state.json'), 'utf8')).skills,
+    )[0];
+    await mkdir(join(repository, '.skills-manager/intents'), { recursive: true });
+    await writeFile(
+      join(repository, '.skills-manager/intents', `alpha-skill__${stateKey.slice(0, 8)}.json`),
+      '{"version":1,"intents":null}\n',
+    );
+
+    const inspected = await runCli(
+      ['inspect', '--scope', 'global', '--runtime', TEST_RUNTIME],
+      { cwd: repository, env: { HOME: globalHome, CODEX_HOME: join(globalHome, '.codex') } },
+    );
+
+    assert.equal(inspected.result.status, 'ready', JSON.stringify(inspected.result));
+    assert.deepEqual(inspected.result.data.managed.installations, [
+      {
+        installName: 'alpha-skill',
+        identity: globalManaged.identity,
+        scope: 'global',
+        alignment: 'current',
+        effectiveIntentsHash: globalManaged.effectiveIntentsHash,
+        renderedEffectiveIntentsHash: globalManaged.effectiveIntentsHash,
+      },
+    ]);
   } finally {
     await audit.close();
   }

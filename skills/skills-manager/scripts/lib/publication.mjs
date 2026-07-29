@@ -65,8 +65,8 @@ function simulateRollbackFailure(step) {
 }
 
 async function restoreDisplacedRenderings(targetBackups, publishedTargets) {
-  const failures = [];
   const activatedTargets = new Set(publishedTargets);
+  const failures = [];
   for (const { target, backup } of [...targetBackups].reverse()) {
     for (const [step, operation] of [
       [
@@ -84,13 +84,7 @@ async function restoreDisplacedRenderings(targetBackups, publishedTargets) {
       try {
         await operation();
       } catch (error) {
-        failures.push({
-          target,
-          backup,
-          step,
-          code: error?.code,
-          message: error?.message,
-        });
+        failures.push({ target, backup, step, code: error?.code, message: error?.message });
       }
     }
   }
@@ -1136,6 +1130,7 @@ export async function publishAttempt({ workDir }) {
       `.${manifest.operation.skill}.skills-manager-${manifest.nonce}-${index}`,
     );
   });
+  const preparationSiblings = siblings.map((sibling) => `${sibling}.preparing`);
   const createdDirectories = new Set();
   const replacedDirectories = [];
   const publishedTargets = [];
@@ -1146,19 +1141,22 @@ export async function publishAttempt({ workDir }) {
   let identityResolutionWritten = false;
   const intentSnapshots = [];
   try {
-    for (const path of [...siblings.map(dirname), ...links.map(({ absolutePath }) => dirname(absolutePath))]) {
+    for (const path of [
+      ...preparationSiblings.map(dirname),
+      ...links.map(({ absolutePath }) => dirname(absolutePath)),
+    ]) {
       for (const created of await ensureContainedDirectory(repositoryRoot, path)) {
         createdDirectories.add(created);
       }
     }
-    for (const sibling of siblings) {
-      await cp(manifest.candidateRoot, sibling, {
+    for (const preparationSibling of preparationSiblings) {
+      await cp(manifest.candidateRoot, preparationSibling, {
         recursive: true,
         errorOnExist: true,
         verbatimSymlinks: true,
       });
       const siblingValidation = await validateCandidate({
-        candidateRoot: sibling,
+        candidateRoot: preparationSibling,
         workDir: resolvedWorkDir,
         operation: manifest.operation,
         checkDirectoryName: false,
@@ -1207,6 +1205,9 @@ export async function publishAttempt({ workDir }) {
     simulateInterruption('state');
     await replaceJson(lockPath, nextLock, { nonce: manifest.nonce });
     simulateInterruption('lock');
+    for (let index = 0; index < preparationSiblings.length; index += 1) {
+      await rename(preparationSiblings[index], siblings[index]);
+    }
     for (let index = 0; index < targets.length; index += 1) {
       const replacement = replacementsByDirectory.get(dirname(targets[index]));
       if (replacement) {
@@ -1258,7 +1259,9 @@ export async function publishAttempt({ workDir }) {
     if (rollbackFailures.length > 0) {
       error.details = { ...(error.details || {}), rollbackFailures };
     }
-    for (const sibling of siblings) await rm(sibling, { recursive: true, force: true });
+    for (const sibling of [...siblings, ...preparationSiblings]) {
+      await rm(sibling, { recursive: true, force: true });
+    }
     for (const replacement of replacedDirectories.reverse()) {
       await rmdir(replacement.absolutePath).catch(() => {});
       await symlink(replacement.linkTarget, replacement.absolutePath, 'dir').catch(() => {});

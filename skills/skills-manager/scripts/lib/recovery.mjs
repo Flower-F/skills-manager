@@ -202,7 +202,7 @@ async function pathInfo(path) {
   }
 }
 
-async function observeManagedTargets(root, managed, pending, allowUnrecognizedArtifacts) {
+async function observeManagedTargets(root, managed) {
   const allowed = new Set([managed.renderedHash, managed.desiredRenderedHash]);
   const observations = [];
   const artifacts = [];
@@ -213,33 +213,45 @@ async function observeManagedTargets(root, managed, pending, allowUnrecognizedAr
     const artifactName = new RegExp(
       `^\\.${escapedName}\\.skills-manager-(?:backup-)?[a-f0-9]{32}-${index}$`,
     );
+    const preparationName = new RegExp(
+      `^\\.${escapedName}\\.skills-manager-[a-f0-9]{32}-${index}\\.preparing$`,
+    );
     const candidates = [];
     await assertContainedExistingAncestor(root, dirname(target));
     for (const entry of await readdir(dirname(target), { withFileTypes: true }).catch((error) => {
       if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return [];
       throw error;
     })) {
-      if (!entry.name.startsWith(prefix) || !artifactName.test(entry.name)) continue;
+      if (!entry.name.startsWith(prefix)) continue;
+      const path = join(dirname(target), entry.name);
+      if (preparationName.test(entry.name)) {
+        if (!entry.isDirectory()) {
+          throw recoveryConflict({ reason: 'untracked_change', target: path, choices: ['cancel'] });
+        }
+        await assertContainedExistingAncestor(root, path);
+        artifacts.push(path);
+        continue;
+      }
+      if (!artifactName.test(entry.name)) continue;
       if (!entry.isDirectory()) {
         throw recoveryConflict({
           reason: 'untracked_change',
-          target: join(dirname(target), entry.name),
+          target: path,
           choices: ['cancel'],
         });
       }
-      const path = join(dirname(target), entry.name);
       await assertContainedExistingAncestor(root, path);
       candidates.push({ path, hash: await renderedHashForRoot(path) });
     }
-    artifacts.push(...candidates.map(({ path }) => path));
     const unexplainedArtifacts = candidates.filter(({ hash }) => !allowed.has(hash));
-    if (unexplainedArtifacts.length > 0 && !allowUnrecognizedArtifacts) {
+    if (unexplainedArtifacts.length > 0) {
       throw recoveryConflict({
         reason: 'untracked_change',
         targets: unexplainedArtifacts,
         choices: ['cancel'],
       });
     }
+    artifacts.push(...candidates.map(({ path }) => path));
     const info = await pathInfo(target);
     if (info?.isDirectory() && !info.isSymbolicLink()) {
       observations.push({ target, hash: await renderedHashForRoot(target) });
@@ -247,14 +259,6 @@ async function observeManagedTargets(root, managed, pending, allowUnrecognizedAr
     }
     if (info) {
       throw recoveryConflict({ reason: 'untracked_change', target, choices: ['cancel'] });
-    }
-    const unexplained = candidates.filter(({ hash }) => !allowed.has(hash));
-    if (unexplained.length > 0 && !allowUnrecognizedArtifacts) {
-      throw recoveryConflict({
-        reason: 'untracked_change',
-        targets: unexplained,
-        choices: ['cancel'],
-      });
     }
     const selected =
       candidates.find(({ hash }) => hash === managed.desiredRenderedHash) ||
@@ -341,12 +345,7 @@ export async function recoverInterruptedPublication({ root, managed, intentMisma
     managed.desiredRenderedHash !== managed.renderedHash ||
     intentMismatch;
   await currentStateBaseline(root, managed);
-  const { observations: observed, artifacts } = await observeManagedTargets(
-    root,
-    managed,
-    pending,
-    intentMismatch,
-  );
+  const { observations: observed, artifacts } = await observeManagedTargets(root, managed);
   const missingLinks = await inspectTopologyLinks(root, managed);
   if (intentMismatch) {
     const divergent = observed.filter(
