@@ -23,6 +23,8 @@ project: .skills-manager/intents/<source>--<skill>.md
 global:  ${XDG_CONFIG_HOME:-~/.config}/skills-manager/intents/<source>--<skill>.md
 ```
 
+In filenames, each run outside letters, digits, `.`, `_`, and `-` becomes `--`; identity remains authoritative in frontmatter.
+
 Each Markdown document contains only normalized source, upstream Skill name, scope, and currently active semantic outcomes. It is created after the first Intent is approved, saved before the installed Skill is edited, and deleted when its final active Intent disappears. It contains no stable ids, disabled entries, history, implementation evidence, or Update reports.
 
 Intent application edits the public installed path returned by `npx skills list --json`. An Agent may adapt implementation details while preserving the approved semantic result. A weakened, broadened, replaced, or otherwise revised result requires user approval. Clean upstream fulfillment is proposed to the user before an Intent is removed.

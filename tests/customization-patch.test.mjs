@@ -218,6 +218,22 @@ test('text without a trailing newline remains visible in the raw patch', async (
   assert.match(result.stdout, /\+custom-without-newline/);
 });
 
+test('a trailing-newline-only change is represented exactly', async () => {
+  const root = await temp('skills-manager-newline-only-');
+  const project = join(root, 'project');
+  const home = join(root, 'home');
+  const installed = join(project, 'alpha');
+  await write(join(installed, 'SKILL.md'), 'same');
+  await write(join(project, '.skills-manager/intents/acme--skills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Remove the trailing newline.\n');
+  const fake = await fakeNpx(join(root, 'fake'));
+  const result = await run(['alpha'], { cwd: project, home, fake, env: {
+    FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]),
+    FAKE_CLEAN_FILES: JSON.stringify({ 'SKILL.md': 'same\n' }),
+  } });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.match(result.stdout, /-same\n\+same\n\\ No newline at end of file/);
+});
+
 test('same name in project and global scope is ambiguous until scope is supplied', async () => {
   const root = await temp('skills-manager-ambiguity-');
   const project = join(root, 'project');
@@ -304,6 +320,12 @@ test('Intent documents reject extra durable state and an empty active list', asy
     assert.equal(result.exitCode, 1);
     assert.match(result.stderr, /content outside the active Intent list/i);
   });
+  await t.test('invalid scope identity', async () => {
+    await write(document, '---\nsource: acme/skills\nskill: alpha\nscope: Project\n---\n\n# Active Intents\n\n- Customize.\n');
+    const result = await run(['alpha'], { cwd: project, home, fake, env });
+    assert.equal(result.exitCode, 1);
+    assert.match(result.stderr, /invalid Installation scope Project/i);
+  });
 });
 
 test('sidecars for distinct source identities coexist while the matching identity is selected', async () => {
@@ -314,6 +336,23 @@ test('sidecars for distinct source identities coexist while the matching identit
   await write(join(installed, 'SKILL.md'), 'same\n');
   await write(join(project, '.skills-manager/intents/old--skills--alpha.md'), '---\nsource: old/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Preserve old identity.\n');
   await write(join(project, '.skills-manager/intents/acme--skills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Preserve current identity.\n');
+  const fake = await fakeNpx(join(root, 'fake'));
+  const result = await run(['alpha'], { cwd: project, home, fake, env: {
+    FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]),
+    FAKE_CLEAN_FILES: JSON.stringify({ 'SKILL.md': 'same\n' }),
+  } });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.match(result.stdout, /active Intents exist, but the Customization patch is empty/i);
+});
+
+test('a malformed sidecar for another Skill cannot fail this Installation', async () => {
+  const root = await temp('skills-manager-unrelated-sidecar-');
+  const project = join(root, 'project');
+  const home = join(root, 'home');
+  const installed = join(project, 'alpha');
+  await write(join(installed, 'SKILL.md'), 'same\n');
+  await write(join(project, '.skills-manager/intents/acme--skills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Preserve current identity.\n');
+  await write(join(project, '.skills-manager/intents/broken--beta.md'), 'not valid frontmatter\n');
   const fake = await fakeNpx(join(root, 'fake'));
   const result = await run(['alpha'], { cwd: project, home, fake, env: {
     FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]),

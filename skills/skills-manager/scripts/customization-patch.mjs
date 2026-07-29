@@ -107,6 +107,7 @@ function parseIntentDocument(content, path) {
   for (const field of Object.keys(metadata)) {
     if (!['source', 'skill', 'scope'].includes(field)) throw new UserError(`Intent document ${path} contains unsupported identity field ${field}.`);
   }
+  if (!['project', 'global'].includes(metadata.scope)) throw new UserError(`Intent document ${path} has invalid Installation scope ${metadata.scope}.`);
   const body = content.slice(match[0].length).trim();
   const lines = body.split('\n');
   if (lines[0] !== '# Active Intents') {
@@ -136,11 +137,14 @@ async function findIntentDocument(installation, upstreamSource) {
     throw error;
   }
   const documents = [];
-  for (const name of names.filter((entry) => entry.endsWith('.md')).sort()) {
+  const skillSuffix = `--${installation.name.replace(/[^a-zA-Z0-9._-]+/g, '--')}.md`;
+  for (const name of names.filter((entry) => entry.endsWith(skillSuffix)).sort()) {
     const path = join(directory, name);
     const content = await readFile(path, 'utf8');
     const metadata = parseIntentDocument(content, path);
-    if (metadata.skill === installation.name && metadata.scope === installation.scope) documents.push({ path, content, metadata });
+    if (metadata.skill !== installation.name) throw new UserError(`Intent document ${path} filename and upstream Skill identifier disagree.`);
+    if (metadata.scope !== installation.scope) throw new UserError(`Intent document ${path} scope does not match its ${installation.scope} sidecar area.`);
+    documents.push({ path, content, metadata });
   }
   const matchingDocuments = documents.filter((document) => normalizeSource(document.metadata.source) === normalizeSource(upstreamSource));
   if (matchingDocuments.length > 1) throw new UserError(`Multiple Intent documents claim the same ${installation.scope} Skill identity for ${installation.name}; resolve the duplicate before continuing.`);
@@ -203,13 +207,17 @@ function linePatch(path, clean, installed) {
   const afterText = installed?.toString('utf8');
   const before = beforeText === undefined ? [] : beforeText.split('\n').slice(0, beforeText.endsWith('\n') ? -1 : undefined);
   const after = afterText === undefined ? [] : afterText.split('\n').slice(0, afterText.endsWith('\n') ? -1 : undefined);
+  const beforeMissingNewline = beforeText !== undefined && beforeText.length > 0 && !beforeText.endsWith('\n');
+  const afterMissingNewline = afterText !== undefined && afterText.length > 0 && !afterText.endsWith('\n');
   return [
     `diff -- ${cleanLabel} ${installedLabel}`,
     `--- ${cleanLabel}`,
     `+++ ${installedLabel}`,
     '@@',
     ...before.map((line) => `-${line}`),
+    ...(beforeMissingNewline ? ['\\ No newline at end of file'] : []),
     ...after.map((line) => `+${line}`),
+    ...(afterMissingNewline ? ['\\ No newline at end of file'] : []),
     '',
   ].join('\n');
 }

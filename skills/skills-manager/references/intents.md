@@ -13,7 +13,7 @@ npx skills list --json --global
 
 Use the returned `name`, `path`, `scope`, `source` or `sourceUrl`, `sourceType`, and `agents`. Required fields must be present and well-formed. A same-name project/global pair is ambiguous: ask the user to choose the Installation. A same-name document with another normalized source or upstream Skill name is a different Skill identity; present explicit keep/new/manual-migration choices before changing either document.
 
-Store project documents in `.skills-manager/intents/`. Store global documents in `${XDG_CONFIG_HOME:-~/.config}/skills-manager/intents/`, independent of every Agent runtime directory. Use a readable filename derived from normalized source and Skill name, and bind authority through frontmatter:
+Store project documents in `.skills-manager/intents/`. Store global documents in `${XDG_CONFIG_HOME:-~/.config}/skills-manager/intents/`, independent of every Agent runtime directory. Name each file `<source-slug>--<skill-slug>.md`, replacing every run outside letters, digits, `.`, `_`, and `-` with `--`; this lets one Installation ignore malformed documents assigned to other Skills. Bind authority through frontmatter:
 
 ```markdown
 ---
