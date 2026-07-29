@@ -3337,6 +3337,75 @@ test('same-named global Intent records from another source identity are not inhe
   }
 });
 
+test('identity resolution distinguishes a missing lock from corrupt lock state', async (t) => {
+  for (const scenario of [
+    { name: 'missing', value: null, status: 'conflict', reason: 'identity_resolution_requires_regeneration' },
+    { name: 'malformed JSON', value: '{', status: 'failed', code: 'invalid_lock' },
+    {
+      name: 'unsupported schema',
+      value: `${JSON.stringify({ version: 2, skills: {} }, null, 2)}\n`,
+      status: 'failed',
+      code: 'invalid_lock',
+    },
+    {
+      name: 'invalid skill entry',
+      value: `${JSON.stringify({
+        version: 1,
+        skills: {
+          'alpha-skill': {
+            source: 'example/skills',
+            sourceType: 'github',
+            skillPath: 'skills/alpha-skill/SKILL.md',
+          },
+        },
+      }, null, 2)}\n`,
+      status: 'failed',
+      code: 'invalid_lock',
+    },
+  ]) {
+    await t.test(scenario.name, async () => {
+      const repository = await temporaryDirectory('skills-manager-identity-lock-state-');
+      await mkdir(join(repository, '.git'));
+      const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+      const audit = await auditService();
+      try {
+        await installManagedAlpha(repository, fake, audit);
+        const statePath = join(repository, '.skills-manager/state.json');
+        const state = JSON.parse(await readFile(statePath, 'utf8'));
+        const [managed] = Object.values(state.skills);
+        state.skills.ambiguous = {
+          ...managed,
+          identity: { source: 'EXAMPLE/SKILLS/', skill: managed.identity.skill },
+        };
+        await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+        const lockPath = join(repository, 'skills-lock.json');
+        if (scenario.value === null) await rm(lockPath);
+        else await writeFile(lockPath, scenario.value);
+
+        const resolved = await runCli(
+          [
+            'identity-resolve',
+            '--skill',
+            'alpha-skill',
+            '--source',
+            'example/skills',
+            '--upstream-skill',
+            managed.identity.skill,
+            '--choice',
+            'manage_clean',
+          ],
+          { cwd: repository, env: {} },
+        );
+        assert.equal(resolved.result.status, scenario.status, JSON.stringify(resolved.result));
+        if (scenario.reason) assert.equal(resolved.result.data.reason, scenario.reason);
+        if (scenario.code) assert.equal(resolved.result.error.code, scenario.code);
+      } finally {
+        await audit.close();
+      }
+    });
+  }
+});
+
 test('ambiguous managed identities and global-only installations require explicit resolution', async () => {
   const repository = await temporaryDirectory('skills-manager-ambiguous-identity-');
   const globalHome = await temporaryDirectory('skills-manager-global-home-');

@@ -8,6 +8,7 @@ import {
   skillIdentityHash as identityHash,
 } from './intent-state.mjs';
 import { stageJsonReplacement } from './json-store.mjs';
+import { readUpstreamLock } from './lock-state.mjs';
 import {
   assertContainedStateDirectory,
   createCandidateSnapshot,
@@ -366,13 +367,8 @@ export async function resolveSkillIdentity({
   }
   const [, selectedManaged] = selected[0];
   await verifyManagedRendering({ repositoryRoot: stateRoot, managed: selectedManaged });
-  let selectedLock;
-  try {
-    const lock = JSON.parse(await readFile(join(stateRoot, 'skills-lock.json'), 'utf8'));
-    selectedLock = lock?.skills?.[skill];
-  } catch {
-    selectedLock = null;
-  }
+  const lockState = await readUpstreamLock(stateRoot);
+  const selectedLock = lockState.status === 'present' ? lockState.value.skills[skill] : null;
   if (
     !selectedLock ||
     normalizedIdentity({

@@ -3,7 +3,6 @@ import {
   cp,
   lstat,
   mkdir,
-  readFile,
   readdir,
   readlink,
   realpath,
@@ -15,6 +14,7 @@ import { basename, dirname, join, resolve } from 'node:path';
 
 import { normalizeSkillIdentity as normalizedIdentity } from './intent-state.mjs';
 import { replaceJson } from './json-store.mjs';
+import { readUpstreamLock } from './lock-state.mjs';
 import { resolveRealPathWithin } from './path-policy.mjs';
 import {
   assertContainedStateDirectory,
@@ -55,16 +55,12 @@ async function assertContainedExistingAncestor(root, path) {
 }
 
 async function validateLock(root, managed) {
-  const path = join(root, 'skills-lock.json');
-  const info = await lstat(path).catch((error) => {
-    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null;
-    throw error;
-  });
-  if (!info?.isFile() || info.isSymbolicLink()) {
+  const lockState = await readUpstreamLock(root);
+  if (lockState.status === 'missing') {
     throw recoveryError('invalid_lock', 'Interrupted publication recovery requires a regular lock file.');
   }
   try {
-    const lock = JSON.parse(await readFile(path, 'utf8'));
+    const lock = lockState.value;
     const entry = lock?.version === 1 && lock.skills?.[managed.installName];
     const lockedIdentity = entry &&
       normalizedIdentity({

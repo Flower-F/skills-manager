@@ -23,6 +23,7 @@ import {
   skillIdentityHash,
 } from './intent-state.mjs';
 import { replaceJson } from './json-store.mjs';
+import { readUpstreamLock } from './lock-state.mjs';
 import { isPathContained, resolveRealPathWithin } from './path-policy.mjs';
 import { loadManifest, saveManifest } from './upstream.mjs';
 import { inspectEnvironment } from './inspect.mjs';
@@ -545,7 +546,10 @@ export async function validateAttempt({ workDir }) {
 }
 
 async function readJsonState(path, kind) {
-  const info = await lstat(path).catch(() => null);
+  const info = await lstat(path).catch((error) => {
+    if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null;
+    throw error;
+  });
   if (!info) return null;
   if (!info.isFile() || info.isSymbolicLink()) {
     throw managedError(`invalid_${kind}`, `${kind} must be a regular file.`);
@@ -568,17 +572,7 @@ async function readJsonState(path, kind) {
     }
     for (const entry of Object.values(value.skills)) {
       if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) throw new Error();
-      if (kind === 'lock') {
-        if (
-          typeof entry.source !== 'string' ||
-          !entry.source ||
-          typeof entry.sourceType !== 'string' ||
-          !/^[a-f0-9]{64}$/.test(entry.computedHash || '') ||
-          (entry.skillPath !== undefined && typeof entry.skillPath !== 'string')
-        ) {
-          throw new Error();
-        }
-      } else if (
+      if (
         entry.identity === null ||
         typeof entry.identity !== 'object' ||
         typeof entry.identity.source !== 'string' ||
@@ -792,7 +786,10 @@ export async function publishAttempt({ workDir }) {
   await assertContainedStateDirectory(repositoryRoot, dirname(statePath));
   const stateDirectoryExisted = Boolean(await lstat(dirname(statePath)).catch(() => null));
   const existingState = (await readJsonState(statePath, 'managed_state')) || { version: 1, skills: {} };
-  const existingLock = (await readJsonState(lockPath, 'lock')) || { version: 1, skills: {} };
+  const existingLockState = await readUpstreamLock(repositoryRoot);
+  const existingLock = existingLockState.status === 'missing'
+    ? { version: 1, skills: {} }
+    : existingLockState.value;
   const identity = normalizeSkillIdentity({
     source: manifest.operation.source,
     skill: validation.lockEntry.skillPath || manifest.operation.skill,

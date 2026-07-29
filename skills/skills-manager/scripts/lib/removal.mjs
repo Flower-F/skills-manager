@@ -21,6 +21,7 @@ import {
   sameSkillIdentity as sameIdentity,
 } from './intent-state.mjs';
 import { replaceJson } from './json-store.mjs';
+import { readUpstreamLock } from './lock-state.mjs';
 import { isPathContained, resolveRealPathWithin } from './path-policy.mjs';
 import {
   assertContainedStateDirectory,
@@ -95,25 +96,6 @@ async function readIntent(root, managed) {
     };
   } catch {
     throw removalError('invalid_intent_state', 'Intent state has an unsupported or malformed schema.');
-  }
-}
-
-async function readLock(root) {
-  const path = join(root, 'skills-lock.json');
-  const info = await lstatIfExists(path);
-  if (!info) return { path, value: { version: 1, skills: {} }, snapshot: null };
-  if (!info.isFile() || info.isSymbolicLink()) {
-    throw removalError('invalid_lock', 'skills-lock.json must be a regular file.');
-  }
-  const snapshot = await readFile(path);
-  try {
-    const value = JSON.parse(snapshot.toString('utf8'));
-    if (value?.version !== 1 || !value.skills || typeof value.skills !== 'object' || Array.isArray(value.skills)) {
-      throw new Error();
-    }
-    return { path, value, snapshot };
-  } catch {
-    throw removalError('invalid_lock', 'skills-lock.json has an unsupported or malformed schema.');
   }
 }
 
@@ -513,7 +495,10 @@ export async function removeManagedSkill({
     environment,
     targets,
   });
-  const lock = await readLock(root);
+  const lockState = await readUpstreamLock(root);
+  const lock = lockState.status === 'missing'
+    ? { path: lockState.path, value: { version: 1, skills: {} }, snapshot: null }
+    : lockState;
   const lockEntry = lock.value.skills[skill];
   const lockedIdentity = normalizedIdentity({
     source: lockEntry?.source || '',
