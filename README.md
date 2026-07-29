@@ -19,11 +19,11 @@ The Agent recommends relevant Skills, distinguishes optional candidates, and use
 An Intent is one approved desired behavior for one upstream Skill identity in one Installation scope. Project and global Intent documents are independent:
 
 ```text
-project: .skills-manager/intents/<source>--<skill>.md
-global:  ${XDG_CONFIG_HOME:-~/.config}/skills-manager/intents/<source>--<skill>.md
+project: .skills-manager/intents/<encoded-source>--<encoded-skill>.md
+global:  ${XDG_CONFIG_HOME:-~/.config}/skills-manager/intents/<encoded-source>--<encoded-skill>.md
 ```
 
-In filenames, each run outside letters, digits, `.`, `_`, and `-` becomes `--`; identity remains authoritative in frontmatter.
+In filenames, ASCII letters, digits, `.`, and `_` remain readable; every other UTF-8 byte becomes uppercase `-HH`. The injective encoding prevents identity collisions, while frontmatter remains authoritative.
 
 Each Markdown document contains only normalized source, upstream Skill name, scope, and currently active semantic outcomes. It is created after the first Intent is approved, saved before the installed Skill is edited, and deleted when its final active Intent disappears. It contains no stable ids, disabled entries, history, implementation evidence, or Update reports.
 

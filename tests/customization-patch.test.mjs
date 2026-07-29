@@ -33,7 +33,8 @@ if (args[1] === 'list') {
   if (!global && process.cwd().includes('skills-manager-customization-')) {
     const skill = process.env.FAKE_SELECTED_SKILL || 'alpha';
     const source = process.env.FAKE_CANDIDATE_SOURCE || 'acme/skills';
-    payload = process.env.FAKE_MISSING_CANDIDATE === '1' ? [] : [{ name: skill, path: join(process.cwd(), '.agents', 'skills', skill), scope: 'project', agents: ['Universal'], source, sourceUrl: 'https://github.com/' + source + '.git', sourceType: 'github' }];
+    const sourceUrl = process.env.FAKE_CANDIDATE_SOURCE_URL || 'https://github.com/' + source + '.git';
+    payload = process.env.FAKE_MISSING_CANDIDATE === '1' ? [] : [{ name: skill, path: join(process.cwd(), '.agents', 'skills', skill), scope: 'project', agents: ['Universal'], source, sourceUrl, sourceType: 'github' }];
   }
   const malformed = process.env.FAKE_MALFORMED_LIST === (global ? 'global' : 'project') || (!global && process.cwd().includes('skills-manager-customization-') && process.env.FAKE_MALFORMED_CANDIDATE === '1');
   process.stdout.write(malformed ? '{' : JSON.stringify(payload));
@@ -113,7 +114,7 @@ test('active Intents with no diff require Agent judgment', async () => {
   const home = join(root, 'home');
   const installed = join(project, '.agents/skills/alpha');
   await write(join(installed, 'SKILL.md'), 'same\n');
-  await write(join(project, '.skills-manager/intents/acme--skills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Keep the same behavior.\n');
+  await write(join(project, '.skills-manager/intents/acme-2Fskills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Keep the same behavior.\n');
   const fake = await fakeNpx(join(root, 'fake'));
   const result = await run(['alpha'], { cwd: project, home, fake, env: {
     FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]),
@@ -132,7 +133,7 @@ test('non-empty comparison emits additions, modifications, deletions, and nested
   await write(join(installed, 'SKILL.md'), 'custom\n');
   await write(join(installed, 'added.md'), 'added\n');
   await write(join(installed, 'nested/changed.md'), 'new nested\n');
-  await write(join(project, '.skills-manager/intents/acme--skills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Customize the Skill.\n');
+  await write(join(project, '.skills-manager/intents/acme-2Fskills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Customize the Skill.\n');
   const fake = await fakeNpx(join(root, 'fake'));
   const result = await run(['alpha'], { cwd: project, home, fake, env: {
     FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]),
@@ -157,8 +158,8 @@ test('unambiguous global Installation uses only the global Intent sidecar', asyn
   const home = join(root, 'home');
   const installed = join(home, 'alpha');
   await write(join(installed, 'SKILL.md'), 'same\n');
-  await write(join(home, '.config/skills-manager/intents/acme--skills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: global\n---\n\n# Active Intents\n\n- Keep global behavior.\n');
-  await write(join(project, '.skills-manager/intents/acme--skills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- This other scope must stay isolated.\n');
+  await write(join(home, '.config/skills-manager/intents/acme-2Fskills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: global\n---\n\n# Active Intents\n\n- Keep global behavior.\n');
+  await write(join(project, '.skills-manager/intents/acme-2Fskills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- This other scope must stay isolated.\n');
   const fake = await fakeNpx(join(root, 'fake'));
   const result = await run(['alpha'], { cwd: project, home, fake, env: {
     FAKE_GLOBAL_LIST: JSON.stringify([installation('alpha', installed, 'global')]),
@@ -174,7 +175,7 @@ test('binary differences have explicit raw-patch behavior', async () => {
   const home = join(root, 'home');
   const installed = join(project, 'alpha');
   await write(join(installed, 'asset.bin'), Buffer.from([0, 2]));
-  await write(join(project, '.skills-manager/intents/acme--skills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Customize binary asset.\n');
+  await write(join(project, '.skills-manager/intents/acme-2Fskills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Customize binary asset.\n');
   const fake = await fakeNpx(join(root, 'fake'));
   const result = await run(['alpha'], { cwd: project, home, fake, env: {
     FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]),
@@ -190,7 +191,7 @@ test('invalid UTF-8 without NUL bytes is treated as non-textual content', async 
   const home = join(root, 'home');
   const installed = join(project, 'alpha');
   await write(join(installed, 'asset.bin'), Buffer.from([0xff, 2]));
-  await write(join(project, '.skills-manager/intents/acme--skills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Customize binary asset.\n');
+  await write(join(project, '.skills-manager/intents/acme-2Fskills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Customize binary asset.\n');
   const fake = await fakeNpx(join(root, 'fake'));
   const result = await run(['alpha'], { cwd: project, home, fake, env: {
     FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]),
@@ -207,7 +208,7 @@ test('text without a trailing newline remains visible in the raw patch', async (
   const home = join(root, 'home');
   const installed = join(project, 'alpha');
   await write(join(installed, 'SKILL.md'), 'custom-without-newline');
-  await write(join(project, '.skills-manager/intents/acme--skills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Customize.\n');
+  await write(join(project, '.skills-manager/intents/acme-2Fskills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Customize.\n');
   const fake = await fakeNpx(join(root, 'fake'));
   const result = await run(['alpha'], { cwd: project, home, fake, env: {
     FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]),
@@ -224,7 +225,7 @@ test('a trailing-newline-only change is represented exactly', async () => {
   const home = join(root, 'home');
   const installed = join(project, 'alpha');
   await write(join(installed, 'SKILL.md'), 'same');
-  await write(join(project, '.skills-manager/intents/acme--skills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Remove the trailing newline.\n');
+  await write(join(project, '.skills-manager/intents/acme-2Fskills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Remove the trailing newline.\n');
   const fake = await fakeNpx(join(root, 'fake'));
   const result = await run(['alpha'], { cwd: project, home, fake, env: {
     FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]),
@@ -252,7 +253,7 @@ test('same name in project and global scope is ambiguous until scope is supplied
   assert.match(invalidResolution.stderr, /scope is accepted only to resolve/i);
 });
 
-test('malformed public fields, duplicate entries, local sources, and identity mismatch fail clearly', async (t) => {
+test('malformed public fields, duplicate entries, and local sources fail clearly', async (t) => {
   const root = await temp('skills-manager-invalid-');
   const project = join(root, 'project');
   const home = join(root, 'home');
@@ -262,22 +263,21 @@ test('malformed public fields, duplicate entries, local sources, and identity mi
   await write(join(base.path, 'SKILL.md'), 'installed\n');
   const cases = [
     ['missing path', [{ ...base, path: null }], /required field.*path/i],
+    ['blank Agent label', [{ ...base, agents: ['   '] }], /required field.*agents/i],
     ['duplicate', [base, base], /duplicate/i],
     ['local', [{ ...base, sourceType: 'local' }], /Local Skills.*unsupported/i],
     ['missing source', [{ ...base, source: null, sourceUrl: null }], /source metadata.*unsupported/i],
+    ['blank source', [{ ...base, source: '   ', sourceUrl: '  ' }], /source metadata.*unsupported/i],
+    ['blank source type', [{ ...base, sourceType: '   ' }], /source metadata.*unsupported/i],
   ];
   for (const [name, entries, pattern] of cases) await t.test(name, async () => {
-    const localIntent = join(project, '.skills-manager/intents/acme--skills--alpha.md');
-    if (name === 'local' || name === 'missing source') await write(localIntent, '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Customize.\n');
+    const localIntent = join(project, '.skills-manager/intents/acme-2Fskills--alpha.md');
+    if (['local', 'missing source', 'blank source', 'blank source type'].includes(name)) await write(localIntent, '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Customize.\n');
     const result = await run(['alpha'], { cwd: project, home, fake, env: { FAKE_PROJECT_LIST: JSON.stringify(entries) } });
     assert.equal(result.exitCode, 1);
     assert.match(result.stderr, pattern);
-    if (name === 'local' || name === 'missing source') await rm(localIntent);
+    if (['local', 'missing source', 'blank source', 'blank source type'].includes(name)) await rm(localIntent);
   });
-  await write(join(project, '.skills-manager/intents/other--alpha.md'), '---\nsource: other/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Wrong identity.\n');
-  const mismatch = await run(['alpha'], { cwd: project, home, fake, env: { FAKE_PROJECT_LIST: JSON.stringify([base]) } });
-  assert.equal(mismatch.exitCode, 1);
-  assert.match(mismatch.stderr, /different Skill identity/i);
 });
 
 test('upstream acquisition failure is reported and temporary content is cleaned', async () => {
@@ -286,7 +286,7 @@ test('upstream acquisition failure is reported and temporary content is cleaned'
   const home = join(root, 'home');
   const installed = join(project, 'alpha');
   await write(join(installed, 'SKILL.md'), 'custom\n');
-  await write(join(project, '.skills-manager/intents/acme--skills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Customize.\n');
+  await write(join(project, '.skills-manager/intents/acme-2Fskills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Customize.\n');
   const fake = await fakeNpx(join(root, 'fake'));
   const result = await run(['alpha'], { cwd: project, home, fake, env: { FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]), FAKE_ADD_FAIL: '1' } });
   assert.equal(result.exitCode, 1);
@@ -298,7 +298,7 @@ test('Intent documents reject extra durable state and an empty active list', asy
   const project = join(root, 'project');
   const home = join(root, 'home');
   const installed = join(project, 'alpha');
-  const document = join(project, '.skills-manager/intents/acme--skills--alpha.md');
+  const document = join(project, '.skills-manager/intents/acme-2Fskills--alpha.md');
   await write(join(installed, 'SKILL.md'), 'custom\n');
   const fake = await fakeNpx(join(root, 'fake'));
   const env = { FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]) };
@@ -334,8 +334,8 @@ test('sidecars for distinct source identities coexist while the matching identit
   const home = join(root, 'home');
   const installed = join(project, 'alpha');
   await write(join(installed, 'SKILL.md'), 'same\n');
-  await write(join(project, '.skills-manager/intents/old--skills--alpha.md'), '---\nsource: old/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Preserve old identity.\n');
-  await write(join(project, '.skills-manager/intents/acme--skills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Preserve current identity.\n');
+  await write(join(project, '.skills-manager/intents/old-2Fskills--alpha.md'), '---\nsource: old/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Preserve old identity.\n');
+  await write(join(project, '.skills-manager/intents/acme-2Fskills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Preserve current identity.\n');
   const fake = await fakeNpx(join(root, 'fake'));
   const result = await run(['alpha'], { cwd: project, home, fake, env: {
     FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]),
@@ -351,7 +351,7 @@ test('a malformed sidecar for another Skill cannot fail this Installation', asyn
   const home = join(root, 'home');
   const installed = join(project, 'alpha');
   await write(join(installed, 'SKILL.md'), 'same\n');
-  await write(join(project, '.skills-manager/intents/acme--skills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Preserve current identity.\n');
+  await write(join(project, '.skills-manager/intents/acme-2Fskills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Preserve current identity.\n');
   await write(join(project, '.skills-manager/intents/broken--beta.md'), 'not valid frontmatter\n');
   const fake = await fakeNpx(join(root, 'fake'));
   const result = await run(['alpha'], { cwd: project, home, fake, env: {
@@ -362,13 +362,45 @@ test('a malformed sidecar for another Skill cannot fail this Installation', asyn
   assert.match(result.stdout, /active Intents exist, but the Customization patch is empty/i);
 });
 
+test('a suffix-colliding sidecar for another Skill cannot fail this Installation', async () => {
+  const root = await temp('skills-manager-colliding-sidecar-');
+  const project = join(root, 'project');
+  const home = join(root, 'home');
+  const installed = join(project, 'alpha');
+  await write(join(installed, 'SKILL.md'), 'same\n');
+  await write(join(project, '.skills-manager/intents/acme-2Fskills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Preserve current identity.\n');
+  await write(join(project, '.skills-manager/intents/other--alpha.md'), '---\nsource: other\nskill: other--alpha\nscope: project\n---\n\n# Active Intents\n\n- This valid sidecar belongs to another Skill.\n');
+  const fake = await fakeNpx(join(root, 'fake'));
+  const result = await run(['alpha'], { cwd: project, home, fake, env: {
+    FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]),
+    FAKE_CLEAN_FILES: JSON.stringify({ 'SKILL.md': 'same\n' }),
+  } });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.match(result.stdout, /active Intents exist, but the Customization patch is empty/i);
+});
+
+test('distinct source identities whose readable slugs collide remain isolated', async () => {
+  const root = await temp('skills-manager-source-slug-collision-');
+  const project = join(root, 'project');
+  const home = join(root, 'home');
+  const installed = join(project, 'alpha');
+  await write(join(installed, 'SKILL.md'), 'installed\n');
+  await write(join(project, '.skills-manager/intents/a-2D-2Db-2Fc--alpha.md'), '---\nsource: a--b/c\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- This belongs to the formerly colliding identity.\n');
+  const fake = await fakeNpx(join(root, 'fake'));
+  const result = await run(['alpha'], { cwd: project, home, fake, env: {
+    FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed, 'project', 'a/b--c')]),
+  } });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.match(result.stdout, /No Intent document exists/);
+});
+
 test('non-GitHub source paths preserve case when resolving Skill identity', async () => {
   const root = await temp('skills-manager-source-case-');
   const project = join(root, 'project');
   const home = join(root, 'home');
   const installed = join(project, 'alpha');
-  await write(join(installed, 'SKILL.md'), 'installed\n');
-  await write(join(project, '.skills-manager/intents/gitlab--alpha.md'), '---\nsource: https://gitlab.com/acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Preserve another identity.\n');
+  await write(join(installed, 'SKILL.md'), 'same\n');
+  await write(join(project, '.skills-manager/intents/https-3A-2F-2Fgitlab.com-2FAcme-2FSkills--alpha.md'), '---\nsource: https://gitlab.com/Acme/Skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Preserve exact-case identity.\n');
   const fake = await fakeNpx(join(root, 'fake'));
   const entry = {
     ...installation('alpha', installed),
@@ -376,9 +408,14 @@ test('non-GitHub source paths preserve case when resolving Skill identity', asyn
     sourceUrl: 'https://gitlab.com/Acme/Skills.git',
     sourceType: 'git',
   };
-  const result = await run(['alpha'], { cwd: project, home, fake, env: { FAKE_PROJECT_LIST: JSON.stringify([entry]) } });
-  assert.equal(result.exitCode, 1);
-  assert.match(result.stderr, /different Skill identity/i);
+  const result = await run(['alpha'], { cwd: project, home, fake, env: {
+    FAKE_PROJECT_LIST: JSON.stringify([entry]),
+    FAKE_CLEAN_FILES: JSON.stringify({ 'SKILL.md': 'same\n' }),
+    FAKE_CANDIDATE_SOURCE: 'https://gitlab.com/Acme/Skills',
+    FAKE_CANDIDATE_SOURCE_URL: 'https://gitlab.com/Acme/Skills.git',
+  } });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.match(result.stdout, /active Intents exist, but the Customization patch is empty/i);
 });
 
 test('malformed machine output and a missing acquired Skill fail at the public interface', async () => {
@@ -387,7 +424,7 @@ test('malformed machine output and a missing acquired Skill fail at the public i
   const home = join(root, 'home');
   const installed = join(project, 'alpha');
   await write(join(installed, 'SKILL.md'), 'custom\n');
-  await write(join(project, '.skills-manager/intents/acme--skills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Customize.\n');
+  await write(join(project, '.skills-manager/intents/acme-2Fskills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Customize.\n');
   const fake = await fakeNpx(join(root, 'fake'));
   const malformed = await run(['alpha'], { cwd: project, home, fake, env: { FAKE_MALFORMED_LIST: 'project' } });
   assert.equal(malformed.exitCode, 1);

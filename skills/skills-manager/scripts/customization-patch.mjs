@@ -49,9 +49,11 @@ async function runSkillsCommand(args, options = {}) {
 function validateEntry(value, expectedScope) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new UserError('Public list output contains a malformed Installation entry.');
   for (const field of ['name', 'path', 'scope']) {
-    if (typeof value[field] !== 'string' || value[field].length === 0) throw new UserError(`Public list output has a missing, null, or malformed required field: ${field}.`);
+    if (typeof value[field] !== 'string' || value[field].trim().length === 0) throw new UserError(`Public list output has a missing, null, or malformed required field: ${field}.`);
   }
-  if (!Array.isArray(value.agents) || value.agents.some((agent) => typeof agent !== 'string')) throw new UserError('Public list output has a missing, null, or malformed required field: agents.');
+  if (!Array.isArray(value.agents) || value.agents.length === 0 || value.agents.some((agent) => typeof agent !== 'string' || agent.trim().length === 0)) {
+    throw new UserError('Public list output has a missing, null, or malformed required field: agents.');
+  }
   if (value.scope !== expectedScope) throw new UserError(`Public list output returned scope ${JSON.stringify(value.scope)} while listing ${expectedScope} Installations.`);
   return value;
 }
@@ -92,6 +94,15 @@ function intentDirectory(scope) {
   return join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'skills-manager', 'intents');
 }
 
+function identitySlug(value) {
+  return [...Buffer.from(value, 'utf8')]
+    .map((byte) => {
+      const character = String.fromCharCode(byte);
+      return /[a-zA-Z0-9._]/.test(character) ? character : `-${byte.toString(16).toUpperCase().padStart(2, '0')}`;
+    })
+    .join('');
+}
+
 function parseIntentDocument(content, path) {
   const match = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(content);
   if (!match) throw new UserError(`Intent document ${path} has malformed frontmatter.`);
@@ -129,34 +140,30 @@ function parseIntentDocument(content, path) {
 
 async function findIntentDocument(installation, upstreamSource) {
   const directory = intentDirectory(installation.scope);
-  let names;
+  const expectedName = `${identitySlug(normalizeSource(upstreamSource))}--${identitySlug(installation.name)}.md`;
+  let content;
+  const path = join(directory, expectedName);
   try {
-    names = await readdir(directory);
+    content = await readFile(path, 'utf8');
   } catch (error) {
     if (error.code === 'ENOENT') return null;
     throw error;
   }
-  const documents = [];
-  const skillSuffix = `--${installation.name.replace(/[^a-zA-Z0-9._-]+/g, '--')}.md`;
-  for (const name of names.filter((entry) => entry.endsWith(skillSuffix)).sort()) {
-    const path = join(directory, name);
-    const content = await readFile(path, 'utf8');
-    const metadata = parseIntentDocument(content, path);
-    if (metadata.skill !== installation.name) throw new UserError(`Intent document ${path} filename and upstream Skill identifier disagree.`);
-    if (metadata.scope !== installation.scope) throw new UserError(`Intent document ${path} scope does not match its ${installation.scope} sidecar area.`);
-    documents.push({ path, content, metadata });
+  const metadata = parseIntentDocument(content, path);
+  if (metadata.skill !== installation.name || normalizeSource(metadata.source) !== normalizeSource(upstreamSource)) {
+    throw new UserError(`Intent document ${path} filename and Skill identity disagree.`);
   }
-  const matchingDocuments = documents.filter((document) => normalizeSource(document.metadata.source) === normalizeSource(upstreamSource));
-  if (matchingDocuments.length > 1) throw new UserError(`Multiple Intent documents claim the same ${installation.scope} Skill identity for ${installation.name}; resolve the duplicate before continuing.`);
-  if (matchingDocuments.length === 1) return matchingDocuments[0];
-  if (documents.length > 0) throw new UserError(`Intent documents for ${installation.scope} Installation ${installation.name} belong to a different Skill identity. Present explicit migration choices to the user; do not reuse them automatically.`);
-  return null;
+  if (metadata.scope !== installation.scope) throw new UserError(`Intent document ${path} scope does not match its ${installation.scope} sidecar area.`);
+  return { path, content, metadata };
 }
 
 function upstreamSourceFor(installation) {
-  if (installation.sourceType === 'local') throw new UserError('Local Skills do not have a tracked upstream baseline; clean-upstream comparison is unsupported.');
-  const source = installation.sourceUrl || installation.source;
-  if (typeof source !== 'string' || source.length === 0 || typeof installation.sourceType !== 'string') {
+  const sourceType = typeof installation.sourceType === 'string' ? installation.sourceType.trim() : '';
+  if (sourceType === 'local') throw new UserError('Local Skills do not have a tracked upstream baseline; clean-upstream comparison is unsupported.');
+  const sourceUrl = typeof installation.sourceUrl === 'string' ? installation.sourceUrl.trim() : '';
+  const fallbackSource = typeof installation.source === 'string' ? installation.source.trim() : '';
+  const source = sourceUrl || fallbackSource;
+  if (!source || !sourceType) {
     throw new UserError('Installation has missing or malformed public source metadata; clean-upstream comparison is unsupported.');
   }
   return source;
