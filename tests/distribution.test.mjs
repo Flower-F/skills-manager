@@ -30,6 +30,7 @@ test('distributed Skill frontmatter and local Markdown links are valid', async (
 test('package exposes only native Node checks with no runtime dependencies or build layer', async () => {
   const packageJson = JSON.parse(await readFile(resolve('package.json'), 'utf8'));
   assert.equal(packageJson.type, 'module');
+  assert.match(packageJson.description, /npx skills.*semantic customization Intents/i);
   assert.equal(packageJson.bin, undefined);
   assert.equal(packageJson.dependencies, undefined);
   assert.equal(packageJson.devDependencies, undefined);

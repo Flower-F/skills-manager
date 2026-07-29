@@ -60,4 +60,6 @@ Interpret its three terminal states exactly:
 
 The patch is best-effort because public upstream metadata may not expose the exact installed revision. Local Skills and missing source metadata have no supported clean-upstream comparison.
 
+Content containing NUL bytes or invalid UTF-8 is reported as a binary difference; its bytes are not decoded into the textual patch.
+
 Review is complete when every active Intent is classified as applied, adapted, upstream-fulfilled, incomplete, or conflicting, and every observed customization is accounted for without persisting evidence or a report.

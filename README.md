@@ -39,6 +39,8 @@ Its normal interface takes only a name. `--scope project|global` is accepted onl
 
 It reports one of three states: no Intent document, active Intents with an empty diff, or a raw non-empty Customization patch. The Agent interprets non-empty output as ephemeral natural-language Customization evidence and accounts for every change against an active Intent. Comparison remains best-effort when upstream metadata cannot identify the exact installed revision.
 
+NUL-containing and invalid UTF-8 files are reported as binary differences rather than decoded as text.
+
 ## Semantic Update
 
 For one Installation, the Agent runs `npx skills update <name>`. A no-Intent Installation completes when upstream succeeds. A customized Installation completes after every Intent is reapplied and reviewed with the helper.

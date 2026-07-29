@@ -1,6 +1,7 @@
 {
   "name": "skills-manager",
   "version": "0.1.0",
+  "description": "Agent guidance for npx skills with semantic customization Intents.",
   "private": true,
   "type": "module",
   "scripts": {

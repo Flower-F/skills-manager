@@ -49,6 +49,11 @@ if (args[1] === 'add') {
     await mkdir(new URL('.', 'file://' + path), { recursive: true });
     await writeFile(path, content);
   }
+  for (const [name, content] of Object.entries(JSON.parse(process.env.FAKE_CLEAN_BASE64 || '{}'))) {
+    const path = join(root, name);
+    await mkdir(new URL('.', 'file://' + path), { recursive: true });
+    await writeFile(path, Buffer.from(content, 'base64'));
+  }
   process.exit(0);
 }
 process.exit(91);
@@ -179,6 +184,23 @@ test('binary differences have explicit raw-patch behavior', async () => {
   assert.match(result.stdout, /Binary files clean\/asset\.bin and installed\/asset\.bin differ/);
 });
 
+test('invalid UTF-8 without NUL bytes is treated as non-textual content', async () => {
+  const root = await temp('skills-manager-invalid-utf8-');
+  const project = join(root, 'project');
+  const home = join(root, 'home');
+  const installed = join(project, 'alpha');
+  await write(join(installed, 'asset.bin'), Buffer.from([0xff, 2]));
+  await write(join(project, '.skills-manager/intents/acme--skills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Customize binary asset.\n');
+  const fake = await fakeNpx(join(root, 'fake'));
+  const result = await run(['alpha'], { cwd: project, home, fake, env: {
+    FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]),
+    FAKE_CLEAN_BASE64: JSON.stringify({ 'asset.bin': Buffer.from([0xfe, 2]).toString('base64') }),
+  } });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.match(result.stdout, /Binary files clean\/asset\.bin and installed\/asset\.bin differ/);
+  assert.doesNotMatch(result.stdout, /�/);
+});
+
 test('text without a trailing newline remains visible in the raw patch', async () => {
   const root = await temp('skills-manager-no-newline-');
   const project = join(root, 'project');
@@ -276,6 +298,48 @@ test('Intent documents reject extra durable state and an empty active list', asy
     assert.equal(result.exitCode, 1);
     assert.match(result.stderr, /contains no active Intent/i);
   });
+  await t.test('history after an active outcome', async () => {
+    await write(document, '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Customize.\n\n## History\n\n- Old evidence.\n');
+    const result = await run(['alpha'], { cwd: project, home, fake, env });
+    assert.equal(result.exitCode, 1);
+    assert.match(result.stderr, /content outside the active Intent list/i);
+  });
+});
+
+test('sidecars for distinct source identities coexist while the matching identity is selected', async () => {
+  const root = await temp('skills-manager-coexisting-identities-');
+  const project = join(root, 'project');
+  const home = join(root, 'home');
+  const installed = join(project, 'alpha');
+  await write(join(installed, 'SKILL.md'), 'same\n');
+  await write(join(project, '.skills-manager/intents/old--skills--alpha.md'), '---\nsource: old/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Preserve old identity.\n');
+  await write(join(project, '.skills-manager/intents/acme--skills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Preserve current identity.\n');
+  const fake = await fakeNpx(join(root, 'fake'));
+  const result = await run(['alpha'], { cwd: project, home, fake, env: {
+    FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]),
+    FAKE_CLEAN_FILES: JSON.stringify({ 'SKILL.md': 'same\n' }),
+  } });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.match(result.stdout, /active Intents exist, but the Customization patch is empty/i);
+});
+
+test('non-GitHub source paths preserve case when resolving Skill identity', async () => {
+  const root = await temp('skills-manager-source-case-');
+  const project = join(root, 'project');
+  const home = join(root, 'home');
+  const installed = join(project, 'alpha');
+  await write(join(installed, 'SKILL.md'), 'installed\n');
+  await write(join(project, '.skills-manager/intents/gitlab--alpha.md'), '---\nsource: https://gitlab.com/acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Preserve another identity.\n');
+  const fake = await fakeNpx(join(root, 'fake'));
+  const entry = {
+    ...installation('alpha', installed),
+    source: 'https://gitlab.com/Acme/Skills',
+    sourceUrl: 'https://gitlab.com/Acme/Skills.git',
+    sourceType: 'git',
+  };
+  const result = await run(['alpha'], { cwd: project, home, fake, env: { FAKE_PROJECT_LIST: JSON.stringify([entry]) } });
+  assert.equal(result.exitCode, 1);
+  assert.match(result.stderr, /different Skill identity/i);
 });
 
 test('malformed machine output and a missing acquired Skill fail at the public interface', async () => {
@@ -322,4 +386,19 @@ test('a public installed path must resolve before a no-Intent terminal result', 
   } });
   assert.equal(result.exitCode, 1);
   assert.match(result.stderr, /installed path.*does not resolve/i);
+});
+
+test('no-Intent state still rejects missing upstream source metadata', async () => {
+  const root = await temp('skills-manager-no-intent-source-');
+  const project = join(root, 'project');
+  const home = join(root, 'home');
+  const installed = join(project, 'alpha');
+  await write(join(installed, 'SKILL.md'), 'installed\n');
+  const fake = await fakeNpx(join(root, 'fake'));
+  const entry = installation('alpha', installed);
+  const result = await run(['alpha'], { cwd: project, home, fake, env: {
+    FAKE_PROJECT_LIST: JSON.stringify([{ ...entry, source: null, sourceUrl: null }]),
+  } });
+  assert.equal(result.exitCode, 1);
+  assert.match(result.stderr, /source metadata.*unsupported/i);
 });

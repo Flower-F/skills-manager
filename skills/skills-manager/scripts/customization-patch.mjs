@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 import { lstat, mkdtemp, readFile, readdir, readlink, realpath, rm } from 'node:fs/promises';
+import { isUtf8 } from 'node:buffer';
 import { homedir, tmpdir } from 'node:os';
 import { join, relative, resolve, sep } from 'node:path';
 import { spawn } from 'node:child_process';
@@ -26,7 +27,7 @@ function parseArguments(argv) {
   return { name, scope };
 }
 
-async function command(args, options = {}) {
+async function runSkillsCommand(args, options = {}) {
   const child = spawn('npx', ['skills', ...args], {
     cwd: options.cwd ?? process.cwd(),
     env: process.env,
@@ -55,8 +56,8 @@ function validateEntry(value, expectedScope) {
   return value;
 }
 
-async function list(scope, cwd = process.cwd()) {
-  const result = await command(['list', '--json', ...(scope === 'global' ? ['--global'] : [])], { cwd });
+async function listInstallations(scope, cwd = process.cwd()) {
+  const result = await runSkillsCommand(['list', '--json', ...(scope === 'global' ? ['--global'] : [])], { cwd });
   if (result.exitCode !== 0) throw new UserError(`Public upstream list failed for ${scope} scope${result.stderr ? `: ${result.stderr.trim()}` : '.'}`);
   let values;
   try {
@@ -69,10 +70,21 @@ async function list(scope, cwd = process.cwd()) {
 }
 
 function normalizeSource(source) {
-  let normalized = source.trim().replace(/\\/g, '/').replace(/\/$/, '').replace(/\.git$/, '');
-  normalized = normalized.replace(/^git\+/, '').replace(/^git@github\.com:/, 'https://github.com/');
-  normalized = normalized.replace(/^https?:\/\/(?:www\.)?github\.com\//, '');
-  return normalized.toLowerCase();
+  const value = source.trim().replace(/^git\+/, '').replace(/\/$/, '').replace(/\.git$/, '');
+  const githubSsh = /^git@github\.com:(.+)$/i.exec(value);
+  if (githubSsh) return githubSsh[1].toLowerCase();
+  const githubUrl = /^(?:https?|ssh):\/\/(?:git@)?(?:www\.)?github\.com\/(.+)$/i.exec(value);
+  if (githubUrl) return githubUrl[1].toLowerCase();
+  if (/^[^/:]+\/[^/]+$/.test(value)) return value.toLowerCase();
+  try {
+    const url = new URL(value);
+    const credentials = url.username ? `${url.username}${url.password ? `:${url.password}` : ''}@` : '';
+    return `${url.protocol}//${credentials}${url.host}${url.pathname.replace(/\/$/, '').replace(/\.git$/, '')}`;
+  } catch {
+    const scp = /^([^@]+@)?([^:]+):(.+)$/.exec(value);
+    if (scp) return `${scp[1] ?? ''}${scp[2].toLowerCase()}:${scp[3]}`;
+    return value;
+  }
 }
 
 function intentDirectory(scope) {
@@ -96,13 +108,25 @@ function parseIntentDocument(content, path) {
     if (!['source', 'skill', 'scope'].includes(field)) throw new UserError(`Intent document ${path} contains unsupported identity field ${field}.`);
   }
   const body = content.slice(match[0].length).trim();
-  if (!body.startsWith('# Active Intents') || !/(?:^|\n)-\s+\S/.test(body)) {
+  const lines = body.split('\n');
+  if (lines[0] !== '# Active Intents') {
     throw new UserError(`Intent document ${path} contains no active Intent; remove the empty document.`);
   }
+  let hasActiveIntent = false;
+  for (const line of lines.slice(1)) {
+    if (line.trim() === '') continue;
+    if (/^-\s+\S/.test(line)) {
+      hasActiveIntent = true;
+      continue;
+    }
+    if (hasActiveIntent && /^\s{2,}\S/.test(line)) continue;
+    throw new UserError(`Intent document ${path} contains content outside the active Intent list.`);
+  }
+  if (!hasActiveIntent) throw new UserError(`Intent document ${path} contains no active Intent; remove the empty document.`);
   return metadata;
 }
 
-async function intentFor(installation) {
+async function findIntentDocument(installation, upstreamSource) {
   const directory = intentDirectory(installation.scope);
   let names;
   try {
@@ -118,17 +142,14 @@ async function intentFor(installation) {
     const metadata = parseIntentDocument(content, path);
     if (metadata.skill === installation.name && metadata.scope === installation.scope) documents.push({ path, content, metadata });
   }
-  if (documents.length > 1) throw new UserError(`Multiple Intent documents claim ${installation.scope} Installation ${installation.name}; resolve the duplicate identity before continuing.`);
-  const document = documents[0];
-  if (!document) return null;
-  const rawInstalledSource = installation.sourceUrl || installation.source;
-  if (typeof rawInstalledSource === 'string' && normalizeSource(document.metadata.source) !== normalizeSource(rawInstalledSource)) {
-    throw new UserError(`Intent document ${document.path} belongs to a different Skill identity. Present explicit migration choices to the user; do not reuse it automatically.`);
-  }
-  return document;
+  const matchingDocuments = documents.filter((document) => normalizeSource(document.metadata.source) === normalizeSource(upstreamSource));
+  if (matchingDocuments.length > 1) throw new UserError(`Multiple Intent documents claim the same ${installation.scope} Skill identity for ${installation.name}; resolve the duplicate before continuing.`);
+  if (matchingDocuments.length === 1) return matchingDocuments[0];
+  if (documents.length > 0) throw new UserError(`Intent documents for ${installation.scope} Installation ${installation.name} belong to a different Skill identity. Present explicit migration choices to the user; do not reuse them automatically.`);
+  return null;
 }
 
-function validateUpstreamIdentity(installation) {
+function upstreamSourceFor(installation) {
   if (installation.sourceType === 'local') throw new UserError('Local Skills do not have a tracked upstream baseline; clean-upstream comparison is unsupported.');
   const source = installation.sourceUrl || installation.source;
   if (typeof source !== 'string' || source.length === 0 || typeof installation.sourceType !== 'string') {
@@ -138,10 +159,10 @@ function validateUpstreamIdentity(installation) {
 }
 
 async function selectInstallation(name, suppliedScope) {
-  const [project, global] = await Promise.all([list('project'), list('global')]);
+  const [project, global] = await Promise.all([listInstallations('project'), listInstallations('global')]);
   const matches = [...project, ...global].filter((entry) => entry.name === name);
-  const identities = new Set(matches.map((entry) => `${entry.scope}:${entry.path}`));
-  if (identities.size !== matches.length) throw new UserError(`Public upstream list returned a duplicate Installation for ${name}.`);
+  const installationLocations = new Set(matches.map((entry) => `${entry.scope}:${entry.path}`));
+  if (installationLocations.size !== matches.length) throw new UserError(`Public upstream list returned a duplicate Installation for ${name}.`);
   if (matches.length === 0) throw new UserError(`Skill ${name} is not installed in project or global scope.`);
   const scopes = new Set(matches.map((entry) => entry.scope));
   if (matches.length > 2 || matches.some((entry, index) => matches.findIndex((other) => other.scope === entry.scope) !== index)) {
@@ -171,7 +192,7 @@ async function regularFiles(root) {
 }
 
 function textual(buffer) {
-  return !buffer.includes(0);
+  return !buffer.includes(0) && isUtf8(buffer);
 }
 
 function linePatch(path, clean, installed) {
@@ -193,7 +214,7 @@ function linePatch(path, clean, installed) {
   ].join('\n');
 }
 
-async function comparison(cleanRoot, installedRoot) {
+async function createCustomizationPatch(cleanRoot, installedRoot) {
   const [clean, installed] = await Promise.all([regularFiles(cleanRoot), regularFiles(installedRoot)]);
   const names = [...new Set([...clean.keys(), ...installed.keys()])].sort();
   return names.flatMap((name) => {
@@ -206,11 +227,11 @@ async function comparison(cleanRoot, installedRoot) {
 async function acquireClean(installation, source) {
   const work = await mkdtemp(join(tmpdir(), 'skills-manager-customization-'));
   try {
-    const acquired = await command(['add', source, '--skill', installation.name, '--agent', 'universal', '--copy', '--yes'], { cwd: work });
+    const acquired = await runSkillsCommand(['add', source, '--skill', installation.name, '--agent', 'universal', '--copy', '--yes'], { cwd: work });
     if (acquired.exitCode !== 0) throw new UserError(`Clean upstream acquisition failed${acquired.stderr ? `: ${acquired.stderr.trim()}` : '.'}`);
-    const candidates = (await list('project', work)).filter((entry) => entry.name === installation.name);
+    const candidates = (await listInstallations('project', work)).filter((entry) => entry.name === installation.name);
     if (candidates.length !== 1) throw new UserError(`Clean upstream acquisition did not expose exactly one selected Skill named ${installation.name} through public list output.`);
-    const candidateSource = validateUpstreamIdentity(candidates[0]);
+    const candidateSource = upstreamSourceFor(candidates[0]);
     if (normalizeSource(candidateSource) !== normalizeSource(source)) throw new UserError('Clean upstream acquisition returned a different source identity through public list output.');
     const root = await realpath(resolve(candidates[0].path));
     const workRoot = await realpath(work);
@@ -238,15 +259,15 @@ async function main() {
   const { name, scope } = parseArguments(process.argv.slice(2));
   const installation = await selectInstallation(name, scope);
   const installedRoot = await installedDirectory(installation.path);
-  const intent = await intentFor(installation);
-  if (!intent) {
+  const upstreamSource = upstreamSourceFor(installation);
+  const intentDocument = await findIntentDocument(installation, upstreamSource);
+  if (!intentDocument) {
     console.log(`No Intent document exists for ${installation.scope} Installation ${name}. Do not acquire or generate a Customization patch; after a successful upstream Update, the semantic branch is complete.`);
     return;
   }
-  const source = validateUpstreamIdentity(installation);
-  const { work, root } = await acquireClean(installation, source);
+  const { work, root } = await acquireClean(installation, upstreamSource);
   try {
-    const patch = await comparison(root, installedRoot);
+    const patch = await createCustomizationPatch(root, installedRoot);
     if (!patch) {
       console.log(`Active Intents exist, but the Customization patch is empty. Determine whether clean upstream fulfills every Intent or Intent application is incomplete; do not decide automatically.`);
       return;
