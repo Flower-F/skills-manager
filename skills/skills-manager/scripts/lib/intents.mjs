@@ -2,6 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import { cp, lstat, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import {
+  intentRecordLocation,
+  normalizeSkillIdentity as normalizedIdentity,
+  skillIdentityHash as identityHash,
+} from './intent-state.mjs';
 import { stageJsonReplacement } from './json-store.mjs';
 import {
   assertContainedStateDirectory,
@@ -39,27 +44,16 @@ function intentError(code, message) {
   return error;
 }
 
-function normalizedIdentity(identity) {
-  return {
-    source: identity.source.trim().replace(/\/+$/, '').toLowerCase(),
-    skill: identity.skill.replaceAll('\\', '/').replace(/^\.\//, ''),
-  };
-}
-
-function identityHash(identity) {
-  const normalized = normalizedIdentity(identity);
-  return createHash('sha256').update(normalized.source).update('\0').update(normalized.skill).digest('hex');
-}
-
 function emptyIntentHash() {
   return createHash('sha256').update('null').digest('hex');
 }
 
 async function readIntentRecord(scopeRoot, managed) {
-  const intentsDirectory = join(scopeRoot, '.skills-manager/intents');
-  await assertContainedStateDirectory(scopeRoot, intentsDirectory);
-  const relativePath = `.skills-manager/intents/${managed.installName}__${identityHash(managed.identity).slice(0, 8)}.json`;
-  const path = join(scopeRoot, relativePath);
+  const { directory, path, relativePath } = intentRecordLocation(scopeRoot, {
+    installName: managed.installName,
+    identity: managed.identity,
+  });
+  await assertContainedStateDirectory(scopeRoot, directory);
   const info = await lstat(path).catch((error) => {
     if (error?.code === 'ENOENT' || error?.code === 'ENOTDIR') return null;
     throw error;
@@ -1464,10 +1458,12 @@ export async function createIntentWorkOrder({ workDir }) {
 
 async function finalizeIntentCandidate({ manifest, resolvedWorkDir, agentResult, materialDiff }) {
   const identity = manifest.operation.identity;
-  const hash = identityHash(identity);
   const nextEffectiveIntentsHash = effectiveIntentsHash(manifest.operation.effectiveIntents);
   const relativePath = manifest.operation.intentStateRelativePath ||
-    `.skills-manager/intents/${manifest.operation.skill}__${hash.slice(0, 8)}.json`;
+    intentRecordLocation(manifest.repositoryRoot, {
+      installName: manifest.operation.skill,
+      identity,
+    }).relativePath;
   let currentSnapshot;
   try {
     currentSnapshot = await createCandidateSnapshot(manifest.candidateRoot);

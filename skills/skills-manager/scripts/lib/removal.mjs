@@ -15,6 +15,11 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 
+import {
+  intentRecordLocation,
+  normalizeSkillIdentity as normalizedIdentity,
+  sameSkillIdentity as sameIdentity,
+} from './intent-state.mjs';
 import { replaceJson } from './json-store.mjs';
 import { isPathContained, resolveRealPathWithin } from './path-policy.mjs';
 import {
@@ -39,39 +44,6 @@ function removalConflict(data) {
   return error;
 }
 
-function normalizedIdentity(identity) {
-  return {
-    source: identity.source.trim().replace(/\/+$/, '').toLowerCase(),
-    skill: identity.skill.replaceAll('\\', '/').replace(/^\.\//, ''),
-  };
-}
-
-function sameIdentity(left, right) {
-  return JSON.stringify(normalizedIdentity(left)) === JSON.stringify(normalizedIdentity(right));
-}
-
-function identityHash(identity) {
-  const normalized = normalizedIdentity(identity);
-  return createHash('sha256')
-    .update(normalized.source)
-    .update('\0')
-    .update(normalized.skill)
-    .digest('hex');
-}
-
-function intentRelativePath(managed) {
-  if (
-    typeof managed.installName !== 'string' ||
-    !managed.installName ||
-    managed.installName === '.' ||
-    managed.installName === '..' ||
-    /[/\\\0]/.test(managed.installName)
-  ) {
-    throw removalError('invalid_managed_state', 'Managed Skill install name is not a safe state filename.');
-  }
-  return `.skills-manager/intents/${managed.installName}__${identityHash(managed.identity).slice(0, 8)}.json`;
-}
-
 async function lstatIfExists(path) {
   try {
     return await lstat(path);
@@ -82,11 +54,21 @@ async function lstatIfExists(path) {
 }
 
 async function readIntent(root, managed) {
-  const relativePath = intentRelativePath(managed);
-  const path = resolve(root, relativePath);
-  const intentsDirectory = join(root, '.skills-manager/intents');
-  await assertContainedStateDirectory(root, intentsDirectory);
-  if (!isPathContained(intentsDirectory, path)) {
+  let location;
+  try {
+    location = intentRecordLocation(root, {
+      installName: managed.installName,
+      identity: managed.identity,
+    });
+  } catch (error) {
+    if (error.code === 'invalid_intent_state') {
+      throw removalError('invalid_managed_state', 'Managed Skill install name is not a safe state filename.');
+    }
+    throw error;
+  }
+  const { directory, path, relativePath } = location;
+  await assertContainedStateDirectory(root, directory);
+  if (!isPathContained(directory, path)) {
     throw removalError('invalid_intent_state', 'Intent state path escapes its authorized directory.');
   }
   const info = await lstatIfExists(path);

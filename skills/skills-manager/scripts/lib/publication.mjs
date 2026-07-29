@@ -15,6 +15,13 @@ import {
 } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
+import {
+  intentRecordLocation,
+  normalizeSkillIdentity,
+  normalizeSkillSource as normalizedSource,
+  sameSkillIdentity,
+  skillIdentityHash,
+} from './intent-state.mjs';
 import { replaceJson } from './json-store.mjs';
 import { isPathContained, resolveRealPathWithin } from './path-policy.mjs';
 import { loadManifest, saveManifest } from './upstream.mjs';
@@ -658,10 +665,6 @@ async function restore(path, content) {
   else await writeFile(path, content);
 }
 
-function normalizedSource(source) {
-  return source.trim().replace(/\/+$/, '').toLowerCase();
-}
-
 export async function publishAttempt({ workDir }) {
   const { manifest, resolvedWorkDir } = await loadManifest(workDir);
   if (
@@ -775,9 +778,11 @@ export async function publishAttempt({ workDir }) {
   const stateDirectoryExisted = Boolean(await lstat(dirname(statePath)).catch(() => null));
   const existingState = (await readJsonState(statePath, 'managed_state')) || { version: 1, skills: {} };
   const existingLock = (await readJsonState(lockPath, 'lock')) || { version: 1, skills: {} };
-  const source = normalizedSource(manifest.operation.source);
-  const upstreamSkill = validation.lockEntry.skillPath || manifest.operation.skill;
-  const identity = { source, skill: upstreamSkill };
+  const identity = normalizeSkillIdentity({
+    source: manifest.operation.source,
+    skill: validation.lockEntry.skillPath || manifest.operation.skill,
+  });
+  const { source, skill: upstreamSkill } = identity;
   const matchingIdentities = Object.values(existingState.skills)
     .filter((entry) => entry.installName === manifest.operation.skill)
     .map((entry) => entry.identity);
@@ -785,33 +790,36 @@ export async function publishAttempt({ workDir }) {
   const existingManagedSkill = Object.values(existingState.skills).find(
     (entry) =>
       entry.installName === manifest.operation.skill &&
-      normalizedSource(entry.identity.source) === source &&
-      entry.identity.skill === upstreamSkill,
+      sameSkillIdentity(entry.identity, identity),
   );
   const existingLockEntry = existingLock.skills[manifest.operation.skill];
   const differentIdentity =
     matchingIdentities.length > 1 ||
     matchingIdentities.some(
-      (candidate) => normalizedSource(candidate.source) !== source || candidate.skill !== upstreamSkill,
+      (candidate) => !sameSkillIdentity(candidate, identity),
     ) ||
     (existingLockEntry &&
-      (normalizedSource(existingLockEntry.source) !== source ||
-        (existingLockEntry.skillPath || manifest.operation.skill) !== upstreamSkill));
+      !sameSkillIdentity(
+        {
+          source: existingLockEntry.source,
+          skill: existingLockEntry.skillPath || manifest.operation.skill,
+        },
+        identity,
+      ));
   const resolution = manifest.operation.identityResolution;
   const normalizedCompetingIdentities = matchingIdentities
-    .map((candidate) => ({
-      source: normalizedSource(candidate.source),
-      skill: candidate.skill,
-    }))
+    .map((candidate) => normalizeSkillIdentity(candidate))
     .sort((left, right) =>
       `${left.source}\0${left.skill}`.localeCompare(`${right.source}\0${right.skill}`),
     );
   const suppliedCompetingIdentities = Array.isArray(resolution?.competingIdentities)
     ? resolution.competingIdentities
-        .map((candidate) => ({
-          source: normalizedSource(candidate?.source || ''),
-          skill: candidate?.skill,
-        }))
+        .map((candidate) =>
+          normalizeSkillIdentity({
+            source: candidate?.source || '',
+            skill: candidate?.skill || '',
+          }),
+        )
         .sort((left, right) =>
           `${left.source}\0${left.skill}`.localeCompare(`${right.source}\0${right.skill}`),
         )
@@ -819,7 +827,7 @@ export async function publishAttempt({ workDir }) {
   const validIdentityMigration =
     manifest.operation.type === 'identity_migrate' &&
     resolution?.choice === 'migrate' &&
-    JSON.stringify(resolution.identity) === JSON.stringify(identity) &&
+    sameSkillIdentity(resolution.identity, identity) &&
     JSON.stringify(suppliedCompetingIdentities) === JSON.stringify(normalizedCompetingIdentities);
   if (resolution && !validIdentityMigration) {
     throw managedError('invalid_identity_resolution', 'The identity migration proposal is invalid.');
@@ -828,10 +836,11 @@ export async function publishAttempt({ workDir }) {
     throw conflictError({
       reason: 'skill_identity_collision',
       installName: manifest.operation.skill,
-      existing: existingIdentity || {
-        source: normalizedSource(existingLockEntry.source),
-        skill: existingLockEntry.skillPath || manifest.operation.skill,
-      },
+      existing: existingIdentity ||
+        normalizeSkillIdentity({
+          source: existingLockEntry.source,
+          skill: existingLockEntry.skillPath || manifest.operation.skill,
+        }),
       proposed: identity,
       choices: ['cancel'],
     });
@@ -881,11 +890,7 @@ export async function publishAttempt({ workDir }) {
       }
     }
   }
-  const identityHash = createHash('sha256')
-    .update(source)
-    .update('\0')
-    .update(upstreamSkill)
-    .digest('hex');
+  const identityHash = skillIdentityHash(identity);
   const managedSkill = {
     identity,
     installName: manifest.operation.skill,
@@ -936,7 +941,6 @@ export async function publishAttempt({ workDir }) {
   const intentPublications = [];
   const intentDeletions = [];
   if (manifest.operation.type !== 'install') {
-    const expectedRelativePath = `.skills-manager/intents/${manifest.operation.skill}__${identityHash.slice(0, 8)}.json`;
     const globalRoot = process.env.HOME ? await realpath(process.env.HOME).catch(() => null) : null;
     const authorizedRoot = (scope) => {
       if (scope === 'project') return repositoryRoot;
@@ -949,37 +953,42 @@ export async function publishAttempt({ workDir }) {
       const scope = candidateState.scope || manifest.operation.intentScope || 'project';
       const root = authorizedRoot(scope);
       const suppliedRoot = await realpath(candidateState.scopeRoot || root).catch(() => null);
-      const intentsDirectory = join(root, '.skills-manager/intents');
-      const absolutePath = resolve(root, candidateState.relativePath || '');
+      const location = intentRecordLocation(root, {
+        installName: manifest.operation.skill,
+        identity,
+      });
       if (
         suppliedRoot !== root ||
-        candidateState.relativePath !== expectedRelativePath ||
-        !isPathContained(intentsDirectory, absolutePath) ||
-        JSON.stringify(candidateState.record?.identity) !== JSON.stringify(identity)
+        candidateState.relativePath !== location.relativePath ||
+        !isPathContained(location.directory, location.path) ||
+        !sameSkillIdentity(candidateState.record?.identity, identity)
       ) {
         throw managedError('invalid_intent_state', 'The candidate Intent state is invalid or mismatched.');
       }
-      intentPublications.push({ absolutePath, intentsDirectory, record: candidateState.record });
+      intentPublications.push({
+        absolutePath: location.path,
+        intentsDirectory: location.directory,
+        record: candidateState.record,
+      });
     }
     for (const deletion of manifest.operation.intentStateDeletions || []) {
       const root = authorizedRoot(deletion.scope);
       const suppliedRoot = await realpath(deletion.scopeRoot || root).catch(() => null);
-      const deletionIdentityHash = createHash('sha256')
-        .update(normalizedSource(deletion.identity?.source || ''))
-        .update('\0')
-        .update(deletion.identity?.skill || '')
-        .digest('hex');
-      const expectedDeletionPath = `.skills-manager/intents/${manifest.operation.skill}__${deletionIdentityHash.slice(0, 8)}.json`;
-      const absolutePath = resolve(root, deletion.relativePath || '');
-      const intentsDirectory = join(root, '.skills-manager/intents');
+      const location = intentRecordLocation(root, {
+        installName: manifest.operation.skill,
+        identity: deletion.identity,
+      });
       if (
         suppliedRoot !== root ||
-        deletion.relativePath !== expectedDeletionPath ||
-        !isPathContained(intentsDirectory, absolutePath)
+        deletion.relativePath !== location.relativePath ||
+        !isPathContained(location.directory, location.path)
       ) {
         throw managedError('invalid_intent_state', 'An Intent migration deletion is invalid.');
       }
-      intentDeletions.push({ absolutePath, intentsDirectory });
+      intentDeletions.push({
+        absolutePath: location.path,
+        intentsDirectory: location.directory,
+      });
     }
     const publicationPaths = new Set(intentPublications.map(({ absolutePath }) => absolutePath));
     if (intentDeletions.some(({ absolutePath }) => publicationPaths.has(absolutePath))) {
@@ -996,24 +1005,20 @@ export async function publishAttempt({ workDir }) {
     for (const baseline of baselines) {
       const baselineRoot = authorizedRoot(baseline.scope || 'project');
       const suppliedRoot = await realpath(baseline.scopeRoot || baselineRoot).catch(() => null);
-      const baselineDirectory = join(baselineRoot, '.skills-manager/intents');
-      const baselinePath = resolve(baselineRoot, baseline.relativePath || '');
       const baselineIdentity = baseline.identity || identity;
-      const baselineIdentityHash = createHash('sha256')
-        .update(normalizedSource(baselineIdentity.source))
-        .update('\0')
-        .update(baselineIdentity.skill)
-        .digest('hex');
-      const baselineExpectedRelativePath = `.skills-manager/intents/${manifest.operation.skill}__${baselineIdentityHash.slice(0, 8)}.json`;
+      const location = intentRecordLocation(baselineRoot, {
+        installName: manifest.operation.skill,
+        identity: baselineIdentity,
+      });
       if (
         suppliedRoot !== baselineRoot ||
-        baseline.relativePath !== baselineExpectedRelativePath ||
-        !isPathContained(baselineDirectory, baselinePath)
+        baseline.relativePath !== location.relativePath ||
+        !isPathContained(location.directory, location.path)
       ) {
         throw managedError('invalid_intent_state', 'An Intent baseline is invalid or mismatched.');
       }
-      await assertContainedStateDirectory(baselineRoot, baselineDirectory);
-      const currentIntentSnapshot = await snapshot(baselinePath);
+      await assertContainedStateDirectory(baselineRoot, location.directory);
+      const currentIntentSnapshot = await snapshot(location.path);
       const currentIntentHash = createHash('sha256')
         .update(currentIntentSnapshot === null ? 'null' : currentIntentSnapshot)
         .digest('hex');

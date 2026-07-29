@@ -13,6 +13,7 @@ import {
 } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 
+import { normalizeSkillIdentity as normalizedIdentity } from './intent-state.mjs';
 import { replaceJson } from './json-store.mjs';
 import { resolveRealPathWithin } from './path-policy.mjs';
 import {
@@ -51,13 +52,6 @@ async function assertContainedExistingAncestor(root, path) {
       'An interrupted-publication recovery path resolves outside the project.',
     );
   }
-}
-
-function normalizedIdentity(identity) {
-  return {
-    source: identity.source.trim().replace(/\/+$/, '').toLowerCase(),
-    skill: identity.skill.replaceAll('\\', '/').replace(/^\.\//, ''),
-  };
 }
 
 async function validateLock(root, managed) {

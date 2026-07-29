@@ -98,7 +98,12 @@ const computedHash = hash.update('scripts/untrusted.mjs').update(script)
 await writeFile(new URL('./skills-lock.json', 'file://' + process.cwd() + '/'), JSON.stringify({
   version: 1,
   skills: {
-    [skill]: { source, sourceType: 'github', skillPath: 'skills/' + skill + '/SKILL.md', computedHash },
+    [skill]: {
+      source,
+      sourceType: 'github',
+      skillPath: process.env.FAKE_UPSTREAM_SKILL_PATH ?? 'skills/' + skill + '/SKILL.md',
+      computedHash,
+    },
   },
 }, null, 2) + '\\n');
 `,
@@ -2918,6 +2923,107 @@ async function completeScopedIntentOperation({
   assert.equal(published.result.status, 'complete', JSON.stringify(published.result));
   return ordered.result.data;
 }
+
+test('equivalent Skill identities share one Intent record across publication and later reads', async () => {
+  const repository = await temporaryDirectory('skills-manager-equivalent-intent-identity-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const rawIdentity = {
+    source: 'Example/Skills///',
+    skill: '.\\skills\\alpha-skill\\SKILL.md',
+  };
+  const environment = {
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+    FAKE_UPSTREAM_SKILL_PATH: rawIdentity.skill,
+  };
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const statePath = join(repository, '.skills-manager/state.json');
+    const lockPath = join(repository, 'skills-lock.json');
+    const state = JSON.parse(await readFile(statePath, 'utf8'));
+    const [stateKey, managed] = Object.entries(state.skills)[0];
+    state.skills[stateKey] = { ...managed, identity: rawIdentity };
+    await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+    const lock = JSON.parse(await readFile(lockPath, 'utf8'));
+    lock.skills['alpha-skill'] = {
+      ...lock.skills['alpha-skill'],
+      source: rawIdentity.source,
+      skillPath: rawIdentity.skill,
+    };
+    await writeFile(lockPath, `${JSON.stringify(lock, null, 2)}\n`);
+
+    const first = await runCli(
+      [
+        'intent-add',
+        '--skill',
+        'alpha-skill',
+        '--intent',
+        'Keep the first equivalent-identity outcome.',
+        '--runtime',
+        TEST_RUNTIME,
+      ],
+      { cwd: repository, env: environment },
+    );
+    await completeScopedIntentOperation({
+      repository,
+      started: first,
+      body: 'Keep both equivalent-identity outcomes.',
+      environment,
+    });
+
+    const canonicalIdentity = {
+      source: 'example/skills',
+      skill: 'skills/alpha-skill/SKILL.md',
+    };
+    const expectedHash = createHash('sha256')
+      .update(canonicalIdentity.source)
+      .update('\0')
+      .update(canonicalIdentity.skill)
+      .digest('hex')
+      .slice(0, 8);
+    assert.deepEqual(
+      await readdir(join(repository, '.skills-manager/intents')),
+      [`alpha-skill__${expectedHash}.json`],
+    );
+
+    const secondEnvironment = { ...environment };
+    delete secondEnvironment.FAKE_UPSTREAM_SKILL_PATH;
+    const second = await runCli(
+      [
+        'intent-add',
+        '--skill',
+        'alpha-skill',
+        '--intent',
+        'Keep the second equivalent-identity outcome.',
+        '--runtime',
+        TEST_RUNTIME,
+      ],
+      { cwd: repository, env: secondEnvironment },
+    );
+    const order = await completeScopedIntentOperation({
+      repository,
+      started: second,
+      body: 'Keep both equivalent-identity outcomes.',
+      environment: secondEnvironment,
+    });
+    assert.equal(order.effectiveIntents.length, 2);
+    assert.deepEqual(
+      await readdir(join(repository, '.skills-manager/intents')),
+      [`alpha-skill__${expectedHash}.json`],
+    );
+    const listed = await runCli(['intent-list', '--skill', 'alpha-skill'], {
+      cwd: repository,
+      env: {},
+    });
+    assert.equal(listed.result.status, 'ready', JSON.stringify(listed.result));
+    assert.equal(listed.result.data.effectiveIntentIds.length, 2);
+  } finally {
+    await audit.close();
+  }
+});
 
 test('global and project Intents form a deterministic union and project suppression is isolated', async () => {
   const repository = await temporaryDirectory('skills-manager-scoped-intents-');
