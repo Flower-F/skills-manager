@@ -1,20 +1,26 @@
-# Remove a managed Skill
+# Removal and self-Update
 
-Removal is scope-explicit. Preview the exact project or global installation before any mutation:
+## Managed removal
+
+1. Resolve the exact Skill identity and scope through public `npx skills list --json` output and obtain approval for the upstream removal selection.
+2. Run the ordinary upstream command, retaining its scope and target-Agent interaction:
+
+   ```sh
+   npx skills remove <skill-name>
+   npx skills remove <skill-name> --global
+   ```
+
+3. After success, run public listing again for the selected scope. If the Installation still has any target Agent, retain its Intent document. If its final target disappeared, delete that scope's Intent document.
+4. Leave the other scope untouched. Explicit independent copies remain upstream-owned.
+
+Managed removal is complete when public listing proves whether the selected Installation remains, its document lifecycle matches that result, and the other scope is unchanged. Limit cleanup and reconciliation to operations completed through this guided branch.
+
+## Skills Manager self-Update
+
+Run the ordinary upstream command:
 
 ```sh
-node <skill-directory>/scripts/skills-manager.mjs remove --skill <installed-skill> --runtime <runtime-id> --scope <project-or-global>
+npx skills update skills-manager
 ```
 
-Explain the returned identity, physical targets, active and retained Intents, project suppressions, inherited global Intents, and installation in the other scope.
-
-- If Intent state remains, ask the user to select `retain_intents` or `delete_intents`; map it to `--intent-policy retain` or `--intent-policy delete`.
-- If project removal exposes another scoped installation, obtain the separate `expose_other_scope` decision and add `--confirm-exposure` only after approval.
-- Ambiguous identity routes through the returned scope-aware `identity-resolve` command described in [intents.md](intents.md).
-- A recorded project Untracked change routes through Archaeology in [update-recovery.md](update-recovery.md). Global drift, changed topology links, and unrecorded extra copies must be reconciled before removal can proceed.
-
-After completing either routed resolution, restart the original scoped `remove` command without `--confirm-removal` and obtain a fresh preview and confirmation token.
-
-After the user confirms the final preview, rerun removal with `--confirm-removal`, the preview's exact `--source`, `--upstream-skill`, `--confirmation-token`, and any selected Intent/exposure options. The token binds approval to the reviewed semantic state, other-scope exposure, topology, and lock entry; a changed preview requires fresh confirmation.
-
-The CLI delegates the base artifact to the pinned upstream adapter, then reconciles recorded targets, managed state, and the single lock entry. Removal is complete only when the latest envelope is terminal `complete`, the selected-scope Rendering is absent, and installations in every other scope still resolve as reported.
+After success, end the current management workflow immediately and ask the user to start a new Agent session. Self-Update is complete when the upstream command succeeded and the new session is the next Skills Manager action.

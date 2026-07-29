@@ -3,12 +3,9 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": {
-    "skills-manager": "skills/skills-manager/scripts/skills-manager.mjs"
-  },
   "scripts": {
     "test": "node --test tests/*.test.mjs",
-    "typecheck": "node --check skills/skills-manager/scripts/skills-manager.mjs && node --check skills/skills-manager/scripts/lib/*.mjs && node --check tests/*.mjs"
+    "typecheck": "node --check skills/skills-manager/scripts/customization-patch.mjs && node --check tests/*.mjs"
   },
   "engines": {
     "node": ">=22"

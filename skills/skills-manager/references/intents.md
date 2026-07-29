@@ -1,99 +1,63 @@
-# Manage customization Intents
+# Intents and Customization patches
 
-An Intent is one concise desired outcome, not conversation history or a textual patch. Intent changes are proposals until terminal publication commits both semantic state and the regenerated Rendering.
+An **Intent** is one user-approved semantic outcome for one Skill identity in one Installation scope. Record the outcome before editing installed content; the document remains authoritative if application is interrupted.
 
-## Add and render an Intent
+## Resolve identity and sidecar
 
-Add a project Intent by default:
-
-```sh
-node <skill-directory>/scripts/skills-manager.mjs intent-add --skill <installed-skill> --intent <semantic-outcome> --runtime <runtime-id>
-```
-
-Add `--scope global` only for an outcome the user wants inherited by every Rendering of the same normalized Skill identity. If `project_rendering_required` is returned, explain `data.resolutions`: when the user selects `create_project_rendering`, load [inspect-install.md](inspect-install.md#discover-and-assess) and complete normal assessment and installation; use global scope only when the user selects `promote_to_global`. After completing the selected resolution, restart `intent-add` with the resolved scope so it acquires a fresh baseline and actually creates the Intent.
-
-For security `needs_confirmation`, load [inspect-install.md](inspect-install.md#discover-and-assess) and resume that exact attempt through its risk-confirmation command. On `ready`, request the semantic boundary:
+Run both project and global public listings:
 
 ```sh
-node <skill-directory>/scripts/skills-manager.mjs work-order --work-dir <work-directory>
+npx skills list --json
+npx skills list --json --global
 ```
 
-Apply every `data.effectiveIntents` outcome beneath `data.editingBoundary.root`. Return a singular result only when the order contains one Intent:
+Use the returned `name`, `path`, `scope`, `source` or `sourceUrl`, `sourceType`, and `agents`. Required fields must be present and well-formed. A same-name project/global pair is ambiguous: ask the user to choose the Installation. A same-name document with another normalized source or upstream Skill name is a different Skill identity; present explicit keep/new/manual-migration choices before changing either document.
+
+Store project documents in `.skills-manager/intents/`. Store global documents in `${XDG_CONFIG_HOME:-~/.config}/skills-manager/intents/`, independent of every Agent runtime directory. Use a readable filename derived from normalized source and Skill name, and bind authority through frontmatter:
+
+```markdown
+---
+source: owner/repository
+skill: example-skill
+scope: project
+---
+
+# Active Intents
+
+- Preserve the user-approved semantic outcome.
+```
+
+Normalize a GitHub source to lowercase `owner/repository`, removing URL syntax and `.git`. Each document contains only `source`, `skill`, and `scope` identity plus active semantic outcomes. Project and global documents are independent; Agent labels are upstream metadata, not paths to scan.
+
+Identity resolution is complete when exactly one public Installation and matching scope-specific document location are selected, or a concrete ambiguity has been returned to the user without mutation.
+
+## Mutate and apply
+
+1. Obtain approval for the semantic outcome.
+2. Create the document lazily for the first Intent, or edit the active bullet list. Keep its content exactly within the identity-and-active-outcomes form above.
+3. Save the approved Intent before applying it.
+4. Edit only the installed `path` returned by public upstream listing. This operation leaves the upstream version unchanged.
+5. Verify the installed Skill satisfies every active Intent. Implementation adaptation is allowed when it preserves the same semantic result; weakening, broadening, replacing, or otherwise revising the result requires user approval.
+6. When removing an Intent, delete its active bullet. Delete the document when its final active Intent is removed.
+
+Intent mutation is complete when the document contains exactly the approved active outcomes and the selected Installation satisfies each outcome, or when a semantic Conflict has been presented without an Agent-chosen revision.
+
+## Review a Customization patch
+
+Normal invocation takes only the Skill name:
 
 ```sh
-node <skill-directory>/scripts/skills-manager.mjs intent-result --work-dir <work-directory> --result <applied-or-adapted> --summary <concise-summary>
+node <skill-directory>/scripts/customization-patch.mjs <skill-name>
 ```
 
-For multiple outcomes, return exactly one scoped result per Effective Intent:
+Use `--scope project` or `--scope global` only after the helper reports a real cross-scope ambiguity and the user resolves it. The helper reads public upstream listing output, acquires clean upstream content in temporary storage, compares without modifying the Installation, and cleans temporary content on success and failure.
 
-```sh
-node <skill-directory>/scripts/skills-manager.mjs intent-result --work-dir <work-directory> --results '[{"id":"<intent-id>","status":"<applied-or-adapted>","summary":"<optional-summary>"}]'
-```
+Interpret its three terminal states exactly:
 
-If `changed_file_scope` needs confirmation, explain every added file and record approval with `continue --work-dir <work-directory> --accept-change-scope`. Review both `data.review.totalDiff`, `data.review.materialDiff`, and the semantic outcome before publication.
+- **No Intent document:** end the semantic branch. Acquire and apply no patch.
+- **Active Intents, empty patch:** determine whether clean upstream now fulfills every Intent or application is incomplete. Propose removing an upstream-fulfilled Intent, and remove it only after user confirmation.
+- **Non-empty patch:** translate the raw text into ephemeral natural-language Customization evidence. Verify every observed change corresponds to an active Intent and surface unrelated changes.
 
-## Resolve semantic results
+The patch is best-effort because public upstream metadata may not expose the exact installed revision. Local Skills and missing source metadata have no supported clean-upstream comparison.
 
-When a per-Intent result is `failed`, explain each returned interpretation. The user's decision to revise is recorded before another edit:
-
-```sh
-node <skill-directory>/scripts/skills-manager.mjs continue --work-dir <work-directory> --accept-semantic-revision
-```
-
-Only the returned `work_order` opens another candidate edit; report the revised result as `adapted`.
-
-When a result is `obsolete`, explain its evidence and returned Intent ownership. Keep the Intent active when the user says the outcome still matters:
-
-```sh
-node <skill-directory>/scripts/skills-manager.mjs continue --work-dir <work-directory> --keep-obsolete-intents
-```
-
-Expire it with the Agent's explanatory reason only after explicit user selection:
-
-```sh
-node <skill-directory>/scripts/skills-manager.mjs continue --work-dir <work-directory> --mark-obsolete-intents
-```
-
-The latter returns a work order for the remaining Effective Intents. Complete that exact order before review.
-
-## List and mutate lifecycle state
-
-List authoritative project/global records before choosing an id or scope:
-
-```sh
-node <skill-directory>/scripts/skills-manager.mjs intent-list --skill <installed-skill>
-```
-
-Listing is complete when the `ready` envelope's project/global records, suppressions, and Effective Intents have been reported and the filesystem remains unchanged.
-
-Use the exact id and owning scope:
-
-```sh
-node <skill-directory>/scripts/skills-manager.mjs intent-edit --skill <installed-skill> --intent-id <intent-id> --intent <new-outcome> --runtime <runtime-id>
-node <skill-directory>/scripts/skills-manager.mjs intent-disable --skill <installed-skill> --intent-id <intent-id> --runtime <runtime-id>
-node <skill-directory>/scripts/skills-manager.mjs intent-enable --skill <installed-skill> --intent-id <intent-id> --runtime <runtime-id>
-node <skill-directory>/scripts/skills-manager.mjs intent-obsolete --skill <installed-skill> --intent-id <intent-id> --reason <reason> --runtime <runtime-id>
-```
-
-Add `--scope global` for a global owner. Suppress one inherited global Intent only for this project with:
-
-```sh
-node <skill-directory>/scripts/skills-manager.mjs intent-suppress --skill <installed-skill> --intent-id <global-intent-id> --runtime <runtime-id>
-```
-
-Equal ids with different scoped meaning, ambiguous normalized identities, and contradictory outcomes remain `conflict`. Use only a returned explicit resolution. For `ambiguous_skill_identity`, select the exact source identity:
-
-```sh
-node <skill-directory>/scripts/skills-manager.mjs identity-resolve --skill <installed-skill> --source <normalized-source> --upstream-skill <upstream-skill-id> --choice <manage_clean-or-migrate> --runtime <runtime-id>
-```
-
-`manage_clean` keeps the verified Rendering without adopting competing Intents. `migrate` performs a fresh semantic rendering, review, and publication before identity ownership changes.
-
-Permanent deletion uses a proposal followed by explicit confirmation:
-
-```sh
-node <skill-directory>/scripts/skills-manager.mjs intent-delete --skill <installed-skill> --intent-id <intent-id> --runtime <runtime-id>
-node <skill-directory>/scripts/skills-manager.mjs intent-delete --skill <installed-skill> --intent-id <intent-id> --runtime <runtime-id> --confirm-delete
-```
-
-Each mutation regenerates from latest upstream. It is durable only when `publish` returns `complete` for another Skill or `restart_required` for Skills Manager itself.
+Review is complete when every active Intent is classified as applied, adapted, upstream-fulfilled, incomplete, or conflicting, and every observed customization is accounted for without persisting evidence or a report.
