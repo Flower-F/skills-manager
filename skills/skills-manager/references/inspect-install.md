@@ -16,7 +16,7 @@ For an explicitly requested global view:
 node <skill-directory>/scripts/skills-manager.mjs inspect --runtime <runtime-id> --scope global
 ```
 
-On `ready`, explain the returned scope, runtimes, targets, and observed topology. Inspection is complete when those observations are reported and the filesystem remains unchanged. On `failed`, report `error.message` and end the branch.
+On `ready`, explain the returned scope, runtimes, targets, observed topology, and every `data.managed.installations` alignment. An `effective_intent_rendering_mismatch` means authoritative Effective intents changed before the replaceable Rendering; explain that state and load [update-recovery.md](update-recovery.md#update) for the returned `nextAction: "update"`. Inspection is complete when every observation and alignment is reported and the filesystem remains unchanged. On `failed`, report `error.message` and end the branch.
 
 ## Discover and assess
 
