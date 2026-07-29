@@ -202,7 +202,7 @@ async function pathInfo(path) {
   }
 }
 
-async function observeManagedTargets(root, managed, pending) {
+async function observeManagedTargets(root, managed, pending, allowUnrecognizedArtifacts) {
   const allowed = new Set([managed.renderedHash, managed.desiredRenderedHash]);
   const observations = [];
   const artifacts = [];
@@ -233,7 +233,7 @@ async function observeManagedTargets(root, managed, pending) {
     }
     artifacts.push(...candidates.map(({ path }) => path));
     const unexplainedArtifacts = candidates.filter(({ hash }) => !allowed.has(hash));
-    if (unexplainedArtifacts.length > 0) {
+    if (unexplainedArtifacts.length > 0 && !allowUnrecognizedArtifacts) {
       throw recoveryConflict({
         reason: 'untracked_change',
         targets: unexplainedArtifacts,
@@ -249,7 +249,7 @@ async function observeManagedTargets(root, managed, pending) {
       throw recoveryConflict({ reason: 'untracked_change', target, choices: ['cancel'] });
     }
     const unexplained = candidates.filter(({ hash }) => !allowed.has(hash));
-    if (unexplained.length > 0) {
+    if (unexplained.length > 0 && !allowUnrecognizedArtifacts) {
       throw recoveryConflict({
         reason: 'untracked_change',
         targets: unexplained,
@@ -335,12 +335,40 @@ async function cleanupArtifacts(root, artifacts) {
   }
 }
 
-export async function recoverInterruptedPublication({ root, managed }) {
+export async function recoverInterruptedPublication({ root, managed, intentMismatch = false }) {
   const pending =
-    Boolean(managed.publicationPending) || managed.desiredRenderedHash !== managed.renderedHash;
+    Boolean(managed.publicationPending) ||
+    managed.desiredRenderedHash !== managed.renderedHash ||
+    intentMismatch;
   await currentStateBaseline(root, managed);
-  const { observations: observed, artifacts } = await observeManagedTargets(root, managed, pending);
+  const { observations: observed, artifacts } = await observeManagedTargets(
+    root,
+    managed,
+    pending,
+    intentMismatch,
+  );
   const missingLinks = await inspectTopologyLinks(root, managed);
+  if (intentMismatch) {
+    const divergent = observed.filter(
+      ({ hash, missing }) => !missing && hash !== managed.renderedHash,
+    );
+    if (divergent.length > 0) {
+      throw recoveryConflict({
+        reason: 'untracked_change',
+        targets: divergent.map(({ target, hash }) => ({ target, hash })),
+        choices: ['recover_with_archaeology', 'cancel'],
+      });
+    }
+    await cleanupArtifacts(root, artifacts);
+    return {
+      recovery: 'regeneration_required',
+      reason: 'effective_intent_rendering_mismatch',
+      desiredRenderedHash: managed.desiredRenderedHash,
+      currentRenderedHash: managed.renderedHash,
+      missingTargets: observed.filter(({ missing }) => missing).map(({ target }) => target),
+      missingLinks,
+    };
+  }
   if (!pending) {
     if (missingLinks.length > 0) {
       throw recoveryConflict({

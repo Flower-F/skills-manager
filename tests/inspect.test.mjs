@@ -87,6 +87,7 @@ test('inspect defaults to project scope and falls back only to the current runti
           runtimes: [TEST_RUNTIME],
         },
       ],
+      managed: { installations: [] },
     },
   });
   assert.deepEqual(await tree(repository), before);

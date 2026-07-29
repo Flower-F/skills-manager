@@ -563,6 +563,12 @@ async function main() {
         scope: parsed.options.scope,
         environment: process.env,
       });
+      const { inspectManagedIntentAlignment } = await import('./lib/intents.mjs');
+      data.managed = await inspectManagedIntentAlignment({
+        repositoryRoot,
+        scope: data.scope,
+        environment: process.env,
+      });
       writeEnvelope({ status: 'ready', command: 'inspect', data });
     }
   } catch (error) {

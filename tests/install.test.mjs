@@ -2171,6 +2171,131 @@ test('interrupted regeneration reapplies every Effective Intent before publicati
   }
 });
 
+test('Inspect reports an Intent-first interruption and Update reconciles the Rendering', async () => {
+  const repository = await temporaryDirectory('skills-manager-intent-first-interruption-');
+  const globalHome = await temporaryDirectory('skills-manager-intent-first-global-home-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    HOME: globalHome,
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+  };
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    const statePath = join(repository, '.skills-manager/state.json');
+    const renderingPath = join(repository, '.agents/skills/alpha-skill/SKILL.md');
+    const stateBefore = await readFile(statePath, 'utf8');
+    const renderingBefore = await readFile(renderingPath, 'utf8');
+    const started = await runCli(
+      [
+        'intent-add',
+        '--skill',
+        'alpha-skill',
+        '--intent',
+        'Preserve the accepted interruption outcome.',
+        '--runtime',
+        TEST_RUNTIME,
+      ],
+      { cwd: repository, env: environment },
+    );
+    const ordered = await runCli(['work-order', '--work-dir', started.result.data.workDir], {
+      cwd: repository,
+      env: environment,
+    });
+    await writeFile(
+      join(started.result.data.candidate.root, 'SKILL.md'),
+      '---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n# Accepted interruption outcome\n',
+    );
+    const reviewed = await runCli(
+      [
+        'intent-result',
+        '--work-dir',
+        started.result.data.workDir,
+        '--result',
+        'applied',
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(reviewed.result.status, 'needs_confirmation', JSON.stringify(reviewed.result));
+    const interrupted = await runCli(
+      ['publish', '--work-dir', started.result.data.workDir, '--accept-publication'],
+      {
+        cwd: repository,
+        env: { ...environment, SKILLS_MANAGER_SIMULATE_INTERRUPTION: 'intent_state' },
+      },
+    );
+    assert.equal(interrupted.result.status, 'failed', JSON.stringify(interrupted.result));
+    assert.equal(interrupted.result.error.code, 'simulated_interruption');
+    assert.equal(await readFile(statePath, 'utf8'), stateBefore);
+    assert.equal(await readFile(renderingPath, 'utf8'), renderingBefore);
+    const [intentFile] = await readdir(join(repository, '.skills-manager/intents'));
+    const intentRecord = JSON.parse(
+      await readFile(join(repository, '.skills-manager/intents', intentFile), 'utf8'),
+    );
+    assert.deepEqual(intentRecord.intents.map(({ text }) => text), [
+      'Preserve the accepted interruption outcome.',
+    ]);
+    await runCli(['abort', '--work-dir', started.result.data.workDir], {
+      cwd: repository,
+      env: environment,
+    });
+
+    const inspected = await runCli(['inspect', '--runtime', TEST_RUNTIME], {
+      cwd: repository,
+      env: environment,
+    });
+    assert.equal(inspected.result.status, 'ready', JSON.stringify(inspected.result));
+    assert.deepEqual(
+      inspected.result.data.managed.installations.map(({ installName, alignment, reason, nextAction }) => ({
+        installName,
+        alignment,
+        reason,
+        nextAction,
+      })),
+      [
+        {
+          installName: 'alpha-skill',
+          alignment: 'mismatch',
+          reason: 'effective_intent_rendering_mismatch',
+          nextAction: 'update',
+        },
+      ],
+    );
+
+    const update = await runCli(['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME], {
+      cwd: repository,
+      env: environment,
+    });
+    const updateOrder = await completeScopedIntentOperation({
+      repository,
+      started: update,
+      body: '# Reconciled accepted interruption outcome',
+      environment,
+    });
+    assert.deepEqual(updateOrder.effectiveIntents.map(({ text }) => text), [
+      'Preserve the accepted interruption outcome.',
+    ]);
+    assert.match(await readFile(renderingPath, 'utf8'), /Reconciled accepted interruption outcome/);
+    const reconciledState = JSON.parse(await readFile(statePath, 'utf8'));
+    const [reconciledManaged] = Object.values(reconciledState.skills);
+    assert.equal(
+      await renderingHash(join(repository, '.agents/skills/alpha-skill')),
+      reconciledManaged.renderedHash,
+    );
+    assert.equal(reconciledManaged.renderedHash, reconciledManaged.desiredRenderedHash);
+    const reinspected = await runCli(['inspect', '--runtime', TEST_RUNTIME], {
+      cwd: repository,
+      env: environment,
+    });
+    assert.equal(reinspected.result.data.managed.installations[0].alignment, 'current');
+  } finally {
+    await audit.close();
+  }
+});
+
 test('recovery ignores lookalike artifacts and refuses parents that resolve outside the project', async (t) => {
   await t.test('lookalike artifact', async () => {
     const repository = await temporaryDirectory('skills-manager-recovery-lookalike-');

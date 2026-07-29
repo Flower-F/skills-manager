@@ -1196,6 +1196,13 @@ export async function publishAttempt({ workDir }) {
       );
       identityResolutionWritten = true;
     }
+    if (
+      intentPublications.length > 0 ||
+      intentDeletions.length > 0 ||
+      identityResolutionWritten
+    ) {
+      simulateInterruption('intent_state');
+    }
     await replaceJson(statePath, preparedState, { nonce: manifest.nonce });
     simulateInterruption('state');
     await replaceJson(lockPath, nextLock, { nonce: manifest.nonce });

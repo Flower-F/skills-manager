@@ -183,6 +183,53 @@ async function readScopedIntents({ repositoryRoot, managed, environment, resolve
   };
 }
 
+export async function inspectManagedIntentAlignment({
+  repositoryRoot,
+  scope,
+  environment,
+}) {
+  const scopeRoot = scope === 'project'
+    ? repositoryRoot
+    : await realpath(environment?.HOME || '').catch(() => null);
+  if (!scopeRoot) {
+    throw intentError('missing_global_root', 'Global Intent scope requires HOME.');
+  }
+  const state = await readManagedState(scopeRoot);
+  const installations = [];
+  for (const managed of Object.values(state?.skills || {})) {
+    if (managed.scope !== scope) continue;
+    const scoped = await readScopedIntents({ repositoryRoot, managed, environment });
+    const effectiveIntents = scope === 'global'
+      ? effectiveIntentsFor(
+          { intents: [], suppressedGlobalIntentIds: [] },
+          scoped.global,
+        )
+      : scoped.effectiveIntents;
+    const currentEffectiveIntentsHash = effectiveIntentsHash(effectiveIntents);
+    const mismatch = currentEffectiveIntentsHash !== managed.effectiveIntentsHash;
+    installations.push({
+      installName: managed.installName,
+      identity: normalizedIdentity(managed.identity),
+      scope: managed.scope,
+      alignment: mismatch ? 'mismatch' : 'current',
+      effectiveIntentsHash: currentEffectiveIntentsHash,
+      renderedEffectiveIntentsHash: managed.effectiveIntentsHash,
+      ...(mismatch
+        ? {
+            reason: 'effective_intent_rendering_mismatch',
+            nextAction: 'update',
+          }
+        : {}),
+    });
+  }
+  installations.sort((left, right) =>
+    `${left.installName}\0${left.identity.source}\0${left.identity.skill}`.localeCompare(
+      `${right.installName}\0${right.identity.source}\0${right.identity.skill}`,
+    ),
+  );
+  return { installations };
+}
+
 function intentScopesForOperation(scoped) {
   return Object.fromEntries(
     ['project', 'global'].map((scope) => {
@@ -716,7 +763,28 @@ export async function beginUpdate({
     ambiguityChoices:
       scope === 'project' ? ['migrate', 'manage_clean', 'cancel'] : ['manage_clean', 'cancel'],
   });
-  const recovery = await recoverInterruptedPublication({ root: renderingRoot, managed });
+  let scoped = await readScopedIntents({
+    repositoryRoot,
+    managed,
+    environment,
+    resolveEffective: scope === 'project',
+  });
+  if (scope === 'global') {
+    scoped = {
+      ...scoped,
+      effectiveIntents: scoped.global.intents
+        .filter(({ state: intentState }) => intentState === 'active')
+        .map((intent) => ({ ...intent, scopes: ['global'] })),
+      baselines: scoped.baselines.filter(({ scope: baselineScope }) => baselineScope === 'global'),
+    };
+  }
+  const intentMismatch =
+    effectiveIntentsHash(scoped.effectiveIntents) !== managed.effectiveIntentsHash;
+  const recovery = await recoverInterruptedPublication({
+    root: renderingRoot,
+    managed,
+    intentMismatch,
+  });
   if (recovery.recovery === 'healed') {
     const restartRequired = managed.installName === 'skills-manager';
     return {
@@ -741,21 +809,6 @@ export async function beginUpdate({
         choices: ['recover', 'decline', 'cancel'],
       });
     }
-  }
-  let scoped = await readScopedIntents({
-    repositoryRoot,
-    managed,
-    environment,
-    resolveEffective: scope === 'project',
-  });
-  if (scope === 'global') {
-    scoped = {
-      ...scoped,
-      effectiveIntents: scoped.global.intents
-        .filter(({ state: intentState }) => intentState === 'active')
-        .map((intent) => ({ ...intent, scopes: ['global'] })),
-      baselines: scoped.baselines.filter(({ scope: baselineScope }) => baselineScope === 'global'),
-    };
   }
   const intentRecord = scoped[scope];
   const effectiveIntents = scoped.effectiveIntents;
