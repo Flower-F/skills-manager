@@ -6,6 +6,13 @@
     "target": "ES2022",
     "allowJs": true
   },
-  "include": ["{skills,tests}/**/*.{mjs,js}"],
+  "include": [
+    "skills/**/*.mjs",
+    "skills/**/*.js",
+    "test/**/*.mjs",
+    "test/**/*.js",
+    "tests/**/*.mjs",
+    "tests/**/*.js"
+  ],
   "exclude": ["node_modules"]
 }
