@@ -15,6 +15,7 @@ import {
 import { tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 
+import { replaceJson } from './json-store.mjs';
 import { isPathContained, resolveRealPathWithin } from './path-policy.mjs';
 import {
   assertContainedStateDirectory,
@@ -131,18 +132,6 @@ async function readLock(root) {
     return { path, value, snapshot };
   } catch {
     throw removalError('invalid_lock', 'skills-lock.json has an unsupported or malformed schema.');
-  }
-}
-
-async function atomicWriteJson(path, value) {
-  await mkdir(dirname(path), { recursive: true });
-  const temporary = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
-  try {
-    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`);
-    await rename(temporary, path);
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
   }
 }
 
@@ -651,8 +640,8 @@ export async function removeManagedSkill({
       version: 1,
       skills: Object.fromEntries(Object.entries(lock.value.skills).filter(([name]) => name !== skill)),
     };
-    await atomicWriteJson(statePath, nextState);
-    await atomicWriteJson(lock.path, nextLock);
+    await replaceJson(statePath, nextState);
+    await replaceJson(lock.path, nextLock);
     if (intentPolicy === 'delete' && scopedIntent.exists) await rm(scopedIntent.path, { force: true });
     await rm(recovery.directory, { recursive: true, force: true }).catch(() => {});
     return {

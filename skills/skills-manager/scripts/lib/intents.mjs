@@ -1,7 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { cp, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { cp, lstat, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { stageJsonReplacement } from './json-store.mjs';
 import {
   assertContainedStateDirectory,
   createCandidateSnapshot,
@@ -540,8 +541,6 @@ export async function resolveSkillIdentity({
     }
   }
   const nonce = randomUUID();
-  const stateTemporary = `${statePath}.${nonce}.tmp`;
-  const ruleTemporary = `${rulePath}.${nonce}.tmp`;
   const rule = {
     version: 1,
     rules: {
@@ -554,15 +553,25 @@ export async function resolveSkillIdentity({
     },
   };
   let rulePublished = false;
+  let stateReplacement;
+  let ruleReplacement;
   try {
-    await writeFile(stateTemporary, `${JSON.stringify({ version: 1, skills: nextSkills }, null, 2)}\n`);
-    await writeFile(ruleTemporary, `${JSON.stringify(rule, null, 2)}\n`);
-    await rename(ruleTemporary, rulePath);
+    stateReplacement = await stageJsonReplacement(
+      statePath,
+      { version: 1, skills: nextSkills },
+      { nonce },
+    );
+    ruleReplacement = await stageJsonReplacement(rulePath, rule, { nonce });
+    await ruleReplacement.commit();
     rulePublished = true;
-    await rename(stateTemporary, statePath);
+    await stateReplacement.commit();
   } catch (error) {
-    await rm(stateTemporary, { force: true });
-    await rm(ruleTemporary, { force: true });
+    for (const replacement of [stateReplacement, ruleReplacement]) {
+      if (!replacement) continue;
+      await replacement.discard().catch((cleanupError) => {
+        if (error.cause === undefined) error.cause = cleanupError;
+      });
+    }
     if (rulePublished) {
       if (previousRule === null) await rm(rulePath, { force: true });
       else await writeFile(rulePath, previousRule);

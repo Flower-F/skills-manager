@@ -15,6 +15,7 @@ import {
 } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
+import { replaceJson } from './json-store.mjs';
 import { isPathContained, resolveRealPathWithin } from './path-policy.mjs';
 import { loadManifest, saveManifest } from './upstream.mjs';
 import { inspectEnvironment } from './inspect.mjs';
@@ -647,18 +648,6 @@ async function ensureContainedDirectory(repositoryRoot, directory) {
   }
 }
 
-async function atomicWriteJson(path, value, nonce) {
-  await mkdir(dirname(path), { recursive: true });
-  const temporary = join(dirname(path), `.${basename(path)}.${nonce}.tmp`);
-  try {
-    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`);
-    await rename(temporary, path);
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
-  }
-}
-
 async function snapshot(path) {
   const info = await lstat(path).catch(() => null);
   return info?.isFile() && !info.isSymbolicLink() ? readFile(path) : null;
@@ -1127,7 +1116,9 @@ export async function publishAttempt({ workDir }) {
         directoryExisted: Boolean(await lstat(intentPublication.intentsDirectory).catch(() => null)),
         snapshot: await snapshot(intentPublication.absolutePath),
       });
-      await atomicWriteJson(intentPublication.absolutePath, intentPublication.record, manifest.nonce);
+      await replaceJson(intentPublication.absolutePath, intentPublication.record, {
+        nonce: manifest.nonce,
+      });
     }
     for (const intentDeletion of intentDeletions) {
       intentSnapshots.push({
@@ -1138,16 +1129,16 @@ export async function publishAttempt({ workDir }) {
       await rm(intentDeletion.absolutePath, { force: true });
     }
     if (identityResolutionPublication) {
-      await atomicWriteJson(
+      await replaceJson(
         identityResolutionPublication.path,
         identityResolutionPublication.record,
-        manifest.nonce,
+        { nonce: manifest.nonce },
       );
       identityResolutionWritten = true;
     }
-    await atomicWriteJson(statePath, preparedState, manifest.nonce);
+    await replaceJson(statePath, preparedState, { nonce: manifest.nonce });
     simulateInterruption('state');
-    await atomicWriteJson(lockPath, nextLock, manifest.nonce);
+    await replaceJson(lockPath, nextLock, { nonce: manifest.nonce });
     simulateInterruption('lock');
     for (let index = 0; index < targets.length; index += 1) {
       const replacement = replacementsByDirectory.get(dirname(targets[index]));
@@ -1232,7 +1223,7 @@ export async function publishAttempt({ workDir }) {
     );
   }
   if (preparedState !== nextState) {
-    await atomicWriteJson(statePath, nextState, manifest.nonce);
+    await replaceJson(statePath, nextState, { nonce: manifest.nonce });
     simulateInterruption('final_state');
   }
   await rm(resolvedWorkDir, { recursive: true, force: true }).catch(() => {});

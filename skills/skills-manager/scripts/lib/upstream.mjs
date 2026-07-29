@@ -1,9 +1,10 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { lstat, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
+import { lstat, mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { replaceJson } from './json-store.mjs';
 import { isPathContained, resolveRealPathWithin } from './path-policy.mjs';
 import { SUPPORTED_SKILLS_CLI_VERSION, runtimeRegistry } from './runtime-registry.mjs';
 
@@ -216,17 +217,11 @@ async function assessSecurity({ source, skill, environment }) {
 
 export async function saveManifest(workDir, manifest) {
   const manifestPath = join(workDir, 'skills-manager-attempt.json');
-  const temporaryPath = join(workDir, `.skills-manager-attempt.${randomBytes(8).toString('hex')}.tmp`);
-  try {
-    await writeFile(temporaryPath, `${JSON.stringify(manifest, null, 2)}\n`, {
-      mode: 0o600,
-      flag: 'wx',
-    });
-    await rename(temporaryPath, manifestPath);
-  } catch (error) {
-    await rm(temporaryPath, { force: true });
-    throw error;
-  }
+  await replaceJson(manifestPath, manifest, {
+    nonce: randomBytes(8).toString('hex'),
+    mode: 0o600,
+    exclusive: true,
+  });
 }
 
 export async function loadManifest(workDir) {

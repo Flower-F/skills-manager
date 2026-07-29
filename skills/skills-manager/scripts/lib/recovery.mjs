@@ -10,10 +10,10 @@ import {
   rename,
   rm,
   symlink,
-  writeFile,
 } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
 
+import { replaceJson } from './json-store.mjs';
 import { resolveRealPathWithin } from './path-policy.mjs';
 import {
   assertContainedStateDirectory,
@@ -58,17 +58,6 @@ function normalizedIdentity(identity) {
     source: identity.source.trim().replace(/\/+$/, '').toLowerCase(),
     skill: identity.skill.replaceAll('\\', '/').replace(/^\.\//, ''),
   };
-}
-
-async function atomicWriteJson(path, value) {
-  const temporary = join(dirname(path), `.${basename(path)}.${randomUUID()}.tmp`);
-  try {
-    await writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`);
-    await rename(temporary, path);
-  } catch (error) {
-    await rm(temporary, { force: true });
-    throw error;
-  }
 }
 
 async function validateLock(root, managed) {
@@ -438,7 +427,7 @@ export async function recoverInterruptedPublication({ root, managed }) {
       const { state, key } = await currentStateBaseline(root, managed);
       const finalized = { ...managed, renderedHash: managed.desiredRenderedHash };
       delete finalized.publicationPending;
-      await atomicWriteJson(statePath, {
+      await replaceJson(statePath, {
         version: 1,
         skills: { ...state.skills, [key]: finalized },
       });
