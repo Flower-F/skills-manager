@@ -71,4 +71,4 @@ After the user approves the exact `needs_confirmation` proposal, publish it:
 node <skill-directory>/scripts/skills-manager.mjs publish --work-dir <work-directory> --accept-publication
 ```
 
-Installation is complete when publication returns terminal status `complete` and every returned target contains the reviewed Rendering. A pre-publication `failed`, `conflict`, or rejection leaves the prior workspace authoritative.
+Installation is complete when `publish` returns terminal status `complete` and every returned target contains the reviewed Rendering. A pre-publication `failed`, `conflict`, or rejection leaves the prior workspace authoritative.

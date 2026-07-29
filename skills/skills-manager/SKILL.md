@@ -15,16 +15,16 @@ Every invocation returns one JSON envelope. Treat `status` as a control-flow bou
 - `needs_confirmation`: Explain the concrete consequence and wait for explicit approval.
 - `conflict`: Present the returned reason and choices; resume only through the selected CLI resolution.
 - `work_order`: Edit only `data.editingBoundary.root`, then report every required semantic result through the CLI.
-- `complete`: The operation reached its successful terminal state.
+- `complete`: The current command reached its successful terminal state; interpret its committed effect through that branch's completion criterion.
 - `restart_required`: Skills Manager reached its successful terminal state. Stop all manager work and ask the user to start a new Agent session.
 - `failed`: Explain the technical failure and end this attempt. Retry from its owning top-level command after correcting the cause.
 
-`complete` and `restart_required` are **terminal publication** statuses: the Rendering and durable state are committed. All other mutating statuses remain proposals. If a disposable attempt disappears or its baseline changes, restart from the owning top-level command.
+`complete` and `restart_required` are **terminal statuses**. A mutating proposal becomes durable only when its branch's publication criterion says so; inspection, abort, no-change Update, and removal give `complete` their own branch-specific meaning. If a disposable attempt disappears or its baseline changes, restart from the owning top-level command.
 
 ## Route the requested branch
 
 - For inspection, discovery, security assessment, project/global installation, candidate review, or publication, read [references/inspect-install.md](references/inspect-install.md). Finish only at that branch's stated completion criterion.
-- For adding, listing, editing, disabling, enabling, suppressing, expiring, or deleting Intents—and for semantic work orders and identity resolution—read [references/intents.md](references/intents.md). Use it whenever an Agent result is `failed` or `obsolete`.
+- For adding, listing, editing, disabling, enabling, suppressing, expiring, or deleting Intents—and for semantic work orders and identity resolution—read [references/intents.md](references/intents.md). Use it whenever a per-Intent semantic result is `failed` or `obsolete`.
 - For project/global Update, interrupted-publication regeneration, Untracked-change Archaeology, or Skills Manager self-update, read [references/update-recovery.md](references/update-recovery.md).
 - For project/global managed removal, read [references/removal.md](references/removal.md).
 

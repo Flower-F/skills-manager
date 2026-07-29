@@ -572,7 +572,35 @@ export async function resolveSkillIdentity({
   return { identity: requested, choice, rule: `.skills-manager/identity-resolutions.json` };
 }
 
-async function resolveManagedSkill({ repositoryRoot, skill, environment, requestedScope }) {
+async function managedSkillInExactScope({
+  repositoryRoot,
+  skill,
+  scope,
+  environment,
+  ambiguityChoices,
+}) {
+  const renderingRoot = await realpath(scopeRootFor(scope, repositoryRoot, environment));
+  const state = await readManagedState(renderingRoot);
+  const matches = Object.values(state?.skills || {}).filter((entry) => entry.installName === skill);
+  if (matches.length > 1) {
+    throw intentConflict({
+      reason: 'ambiguous_skill_identity',
+      installName: skill,
+      scope,
+      identities: matches.map(({ identity }) => normalizedIdentity(identity)),
+      choices: ambiguityChoices,
+    });
+  }
+  if (matches.length !== 1) {
+    throw intentError(
+      'managed_skill_not_found',
+      `Expected exactly one ${scope} managed Skill named ${skill}.`,
+    );
+  }
+  return { managed: matches[0], renderingRoot, publicationScope: scope };
+}
+
+async function resolveIntentRendering({ repositoryRoot, skill, environment, requestedScope }) {
   try {
     return {
       managed: await requireManagedSkill(repositoryRoot, skill, environment),
@@ -583,20 +611,13 @@ async function resolveManagedSkill({ repositoryRoot, skill, environment, request
     if (requestedScope !== 'global' || error?.data?.reason !== 'project_rendering_required') {
       throw error;
     }
-    const renderingRoot = await realpath(scopeRootFor('global', repositoryRoot, environment));
-    const globalState = await readManagedState(renderingRoot);
-    const matches = Object.values(globalState?.skills || {}).filter(
-      (entry) => entry.installName === skill,
-    );
-    if (matches.length !== 1) {
-      throw intentConflict({
-        reason: 'ambiguous_skill_identity',
-        installName: skill,
-        identities: matches.map(({ identity }) => normalizedIdentity(identity)),
-        choices: ['cancel'],
-      });
-    }
-    return { managed: matches[0], renderingRoot, publicationScope: 'global' };
+    return managedSkillInExactScope({
+      repositoryRoot,
+      skill,
+      scope: 'global',
+      environment,
+      ambiguityChoices: ['cancel'],
+    });
   }
 }
 
@@ -615,7 +636,7 @@ export async function beginIntentAdd({
       'An Intent must be one concise semantic outcome of at most 500 characters.',
     );
   }
-  const { managed, renderingRoot, publicationScope } = await resolveManagedSkill({
+  const { managed, renderingRoot, publicationScope } = await resolveIntentRendering({
     repositoryRoot,
     skill,
     environment,
@@ -687,25 +708,14 @@ export async function beginUpdate({
   currentRuntime,
   environment,
 }) {
-  const renderingRoot = await realpath(scopeRootFor(scope, repositoryRoot, environment));
-  const state = await readManagedState(renderingRoot);
-  const matches = Object.values(state?.skills || {}).filter((entry) => entry.installName === skill);
-  if (matches.length > 1) {
-    throw intentConflict({
-      reason: 'ambiguous_skill_identity',
-      installName: skill,
-      scope,
-      identities: matches.map(({ identity }) => normalizedIdentity(identity)),
-      choices: ['migrate', 'manage_clean', 'cancel'],
-    });
-  }
-  if (matches.length !== 1) {
-    throw intentError(
-      'managed_skill_not_found',
-      `Expected exactly one ${scope} managed Skill named ${skill}.`,
-    );
-  }
-  const managed = matches[0];
+  const { managed, renderingRoot } = await managedSkillInExactScope({
+    repositoryRoot,
+    skill,
+    scope,
+    environment,
+    ambiguityChoices:
+      scope === 'project' ? ['migrate', 'manage_clean', 'cancel'] : ['manage_clean', 'cancel'],
+  });
   const recovery = await recoverInterruptedPublication({ root: renderingRoot, managed });
   if (recovery.recovery === 'healed') {
     const restartRequired = managed.installName === 'skills-manager';
@@ -1072,7 +1082,7 @@ export async function approveArchaeologyIntents({ workDir, approvedIds }) {
 }
 
 export async function listIntents({ repositoryRoot, skill, environment }) {
-  const { managed, publicationScope } = await resolveManagedSkill({
+  const { managed, publicationScope } = await resolveIntentRendering({
     repositoryRoot,
     skill,
     environment,
@@ -1124,7 +1134,7 @@ export async function beginIntentMutation({
   currentRuntime,
   environment,
 }) {
-  const { managed, renderingRoot, publicationScope } = await resolveManagedSkill({
+  const { managed, renderingRoot, publicationScope } = await resolveIntentRendering({
     repositoryRoot,
     skill,
     environment,
@@ -1419,10 +1429,11 @@ export async function createIntentWorkOrder({ workDir }) {
     operation: manifest.operation,
   });
   const baselineSnapshot = await createCandidateSnapshot(manifest.candidateRoot);
-  const { managed, targets } = await currentManagedForOperation(manifest);
+  const { managed, existingTargets } = await currentManagedForOperation(manifest);
   await assertCurrentIntentBaseline(manifest, managed);
-  const [currentTarget] = targets;
-  const currentRenderingSnapshot = await createCandidateSnapshot(currentTarget);
+  const currentRenderingSnapshot = existingTargets.length > 0
+    ? await createCandidateSnapshot(existingTargets[0])
+    : [];
   await saveManifest(resolvedWorkDir, {
     ...manifest,
     phase: 'awaiting_agent_result',

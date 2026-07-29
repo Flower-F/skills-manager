@@ -22,13 +22,13 @@ Route the result:
 - Terminal status with `data.recovered`: Interrupted publication was healed from a complete desired copy. Every managed target now matches `data.renderedHash`.
 - `ready` with `data.nextAction: "work_order"`: Load [intents.md](intents.md), request the work order, and return every Effective-Intent result.
 - `needs_confirmation` with semantic result `not_required`: Review the bare-upstream total diff and publish the exact candidate after approval.
-- Security `needs_confirmation`: Explain the normalized risk and record explicit acceptance with `continue --accept-risk` for that work directory.
+- Security `needs_confirmation`: Load [inspect-install.md](inspect-install.md#discover-and-assess), explain the normalized risk, and resume that exact work directory through the documented risk-confirmation command.
 - `conflict` with `untracked_change`: Route to Archaeology below.
 - `failed`: Report the integrity or technical failure and end the attempt.
 
 If interrupted state has no complete desired copy, Update automatically returns a normal reviewed candidate whose `data.operation.recovery` is `regeneration_required`. It is rebuilt from latest upstream plus Effective Intents; there is no separate resume registry or `regenerate` confirmation command.
 
-Update is complete at `data.noChange` or terminal publication, with every selected-scope target matching managed state.
+Update is complete at `data.noChange`, a recovered terminal status, or successful `publish`; every selected-scope target then matches managed state.
 
 ## Recover an Untracked change through Archaeology
 
@@ -57,10 +57,10 @@ Use `uncertain` or `contradictory` with a concise summary when interpretation is
 node <skill-directory>/scripts/skills-manager.mjs archaeology-approve --work-dir <work-directory> --approved-ids '["candidate-1"]'
 ```
 
-Load [intents.md](intents.md) for the returned Effective-Intent work order. Archaeology is complete only after terminal publication reconciles every target and managed hash, or declined ownership returns `complete` with the installed content unchanged.
+Load [intents.md](intents.md) for the returned Effective-Intent work order. Archaeology is complete only after `publish` returns `complete` and reconciles every target and managed hash, or declined ownership returns `complete` with the installed content unchanged.
 
 ## Update Skills Manager itself
 
 Use the same scoped Update command with `--skill skills-manager`. Security assessment, Effective Intents, structural validation, diff review, and complete publication remain identical to another managed Skill.
 
-A manager re-publication—including an Intent mutation or interrupted-publication recovery—returns `restart_required`. This is successful terminal publication. End the current workflow immediately and ask the user to start a new Agent session before any further manager command.
+A manager re-publication—including an Intent mutation or interrupted-publication recovery—returns `restart_required` after committing its Rendering and durable state. End the current workflow immediately and ask the user to start a new Agent session before any further manager command.

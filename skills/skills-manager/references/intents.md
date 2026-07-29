@@ -10,9 +10,9 @@ Add a project Intent by default:
 node <skill-directory>/scripts/skills-manager.mjs intent-add --skill <installed-skill> --intent <semantic-outcome> --runtime <runtime-id>
 ```
 
-Add `--scope global` only for an outcome the user wants inherited by every Rendering of the same normalized Skill identity. If `project_rendering_required` is returned, explain `data.resolutions`: route `create_project_rendering` through normal assessment and installation, or use global scope only when the user selects `promote_to_global`.
+Add `--scope global` only for an outcome the user wants inherited by every Rendering of the same normalized Skill identity. If `project_rendering_required` is returned, explain `data.resolutions`: when the user selects `create_project_rendering`, load [inspect-install.md](inspect-install.md#discover-and-assess) and complete normal assessment and installation; use global scope only when the user selects `promote_to_global`.
 
-Security confirmation follows the assessment branch. On `ready`, request the semantic boundary:
+For security `needs_confirmation`, load [inspect-install.md](inspect-install.md#discover-and-assess) and resume that exact attempt through its risk-confirmation command. On `ready`, request the semantic boundary:
 
 ```sh
 node <skill-directory>/scripts/skills-manager.mjs work-order --work-dir <work-directory>
@@ -64,6 +64,8 @@ List authoritative project/global records before choosing an id or scope:
 node <skill-directory>/scripts/skills-manager.mjs intent-list --skill <installed-skill>
 ```
 
+Listing is complete when the `ready` envelope's project/global records, suppressions, and Effective Intents have been reported and the filesystem remains unchanged.
+
 Use the exact id and owning scope:
 
 ```sh
@@ -94,4 +96,4 @@ node <skill-directory>/scripts/skills-manager.mjs intent-delete --skill <install
 node <skill-directory>/scripts/skills-manager.mjs intent-delete --skill <installed-skill> --intent-id <intent-id> --runtime <runtime-id> --confirm-delete
 ```
 
-Each mutation regenerates from latest upstream. It is complete only at terminal publication: `complete` for another Skill, or `restart_required` when the changed Rendering is Skills Manager itself.
+Each mutation regenerates from latest upstream. It is durable only when `publish` returns `complete` for another Skill or `restart_required` for Skills Manager itself.

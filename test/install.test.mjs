@@ -2035,6 +2035,72 @@ test('interrupted publication without any complete copy regenerates from latest 
   }
 });
 
+test('interrupted regeneration reapplies every Effective Intent before publication', async () => {
+  const repository = await temporaryDirectory('skills-manager-recovery-regenerate-intents-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+    FAKE_UPSTREAM_SKILL_CONTENT:
+      '---\nname: alpha-skill\ndescription: Latest regeneration base.\n---\n\n# Latest base\n',
+  };
+  try {
+    await installManagedAlpha(repository, fake, audit);
+    await publishOneIntent(repository, fake, audit, 'Keep examples concise.', 'Concise examples.');
+    const statePath = join(repository, '.skills-manager/state.json');
+    const state = JSON.parse(await readFile(statePath, 'utf8'));
+    const [managed] = Object.values(state.skills);
+    managed.desiredRenderedHash = 'e'.repeat(64);
+    managed.publicationPending = true;
+    await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+    await rm(join(repository, '.agents/skills/alpha-skill'), { recursive: true });
+
+    const regenerated = await runCli(
+      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(regenerated.result.status, 'ready', JSON.stringify(regenerated.result));
+    assert.equal(regenerated.result.data.operation.recovery, 'regeneration_required');
+    const ordered = await runCli(['work-order', '--work-dir', regenerated.result.data.workDir], {
+      cwd: repository,
+      env: environment,
+    });
+    assert.equal(ordered.result.status, 'work_order', JSON.stringify(ordered.result));
+    assert.deepEqual(ordered.result.data.effectiveIntents.map(({ text }) => text), [
+      'Keep examples concise.',
+    ]);
+    await writeFile(
+      join(regenerated.result.data.candidate.root, 'SKILL.md'),
+      '---\nname: alpha-skill\ndescription: Latest regeneration base.\n---\n\n# Latest base\n\nConcise examples.\n',
+    );
+    const reviewed = await runCli(
+      [
+        'intent-result',
+        '--work-dir',
+        regenerated.result.data.workDir,
+        '--results',
+        JSON.stringify([{ id: ordered.result.data.effectiveIntents[0].id, status: 'applied' }]),
+      ],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(reviewed.result.status, 'needs_confirmation', JSON.stringify(reviewed.result));
+    const published = await runCli(
+      ['publish', '--work-dir', regenerated.result.data.workDir, '--accept-publication'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(published.result.status, 'complete', JSON.stringify(published.result));
+    assert.match(
+      await readFile(join(repository, '.agents/skills/alpha-skill/SKILL.md'), 'utf8'),
+      /Latest base[\s\S]*Concise examples/,
+    );
+  } finally {
+    await audit.close();
+  }
+});
+
 test('recovery ignores lookalike artifacts and refuses parents that resolve outside the project', async (t) => {
   await t.test('lookalike artifact', async () => {
     const repository = await temporaryDirectory('skills-manager-recovery-lookalike-');
