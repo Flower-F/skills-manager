@@ -2,8 +2,9 @@ import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { lstat, mkdtemp, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { isAbsolute, join, relative } from 'node:path';
+import { join } from 'node:path';
 
+import { isPathContained, resolveRealPathWithin } from './path-policy.mjs';
 import { SUPPORTED_SKILLS_CLI_VERSION, runtimeRegistry } from './runtime-registry.mjs';
 
 const ANSI_SEQUENCE = /\x1B(?:\[[0-?]*[ -/]*[@-~]|\][^\x07]*(?:\x07|\x1B\\))/g;
@@ -228,15 +229,10 @@ export async function saveManifest(workDir, manifest) {
   }
 }
 
-function isContained(parent, child) {
-  const path = relative(parent, child);
-  return path === '' || (!path.startsWith('..') && !isAbsolute(path));
-}
-
 export async function loadManifest(workDir) {
   const resolvedTemp = await realpath(tmpdir());
   const resolvedWorkDir = await realpath(workDir).catch(() => null);
-  if (!resolvedWorkDir || !isContained(resolvedTemp, resolvedWorkDir) || resolvedWorkDir === resolvedTemp) {
+  if (!resolvedWorkDir || !isPathContained(resolvedTemp, resolvedWorkDir) || resolvedWorkDir === resolvedTemp) {
     const error = new Error('The work directory must resolve beneath the operating-system temporary root.');
     error.code = 'invalid_work_directory';
     throw error;
@@ -266,8 +262,8 @@ export async function loadManifest(workDir) {
     error.code = 'invalid_work_directory';
     throw error;
   }
-  const resolvedCandidate = await realpath(manifest.candidateRoot).catch(() => null);
-  if (!resolvedCandidate || !isContained(resolvedWorkDir, resolvedCandidate)) {
+  const resolvedCandidate = await resolveRealPathWithin(resolvedWorkDir, manifest.candidateRoot).catch(() => null);
+  if (!resolvedCandidate) {
     const error = new Error('The candidate root must resolve inside its work directory.');
     error.code = 'invalid_work_directory';
     throw error;
@@ -321,12 +317,13 @@ export async function assessCandidate({
     const candidateRoot = join(workDir, runtime.projectSkillsDirectory, skill);
     const candidateStat = await lstat(candidateRoot).catch(() => null);
     const resolvedWorkDir = await realpath(workDir);
-    const resolvedCandidateRoot = await realpath(candidateRoot).catch(() => null);
+    const resolvedCandidateRoot = await resolveRealPathWithin(resolvedWorkDir, candidateRoot).catch(
+      () => null,
+    );
     if (
       !candidateStat?.isDirectory() ||
       candidateStat.isSymbolicLink() ||
-      !resolvedCandidateRoot ||
-      !isContained(resolvedWorkDir, resolvedCandidateRoot)
+      !resolvedCandidateRoot
     ) {
       const error = new Error('The acquired candidate must be a real directory inside its Update attempt.');
       error.code = 'invalid_candidate';

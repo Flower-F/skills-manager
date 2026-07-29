@@ -12,8 +12,9 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 
+import { resolveRealPathWithin } from './path-policy.mjs';
 import {
   assertContainedStateDirectory,
   readManagedState,
@@ -33,11 +34,6 @@ function recoveryConflict(data) {
   return error;
 }
 
-function isContained(parent, child) {
-  const path = relative(parent, child);
-  return path === '' || (!path.startsWith('..') && !isAbsolute(path));
-}
-
 async function assertContainedExistingAncestor(root, path) {
   const resolvedRoot = await realpath(root);
   let existing = path;
@@ -48,8 +44,8 @@ async function assertContainedExistingAncestor(root, path) {
     }
     existing = parent;
   }
-  const resolved = await realpath(existing).catch(() => null);
-  if (!resolved || !isContained(resolvedRoot, resolved)) {
+  const resolved = await resolveRealPathWithin(resolvedRoot, existing).catch(() => null);
+  if (!resolved) {
     throw recoveryError(
       'invalid_publication_target',
       'An interrupted-publication recovery path resolves outside the project.',

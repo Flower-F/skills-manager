@@ -13,8 +13,9 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
+import { basename, dirname, join, relative, resolve } from 'node:path';
 
+import { isPathContained, resolveRealPathWithin } from './path-policy.mjs';
 import {
   assertContainedStateDirectory,
   readManagedState,
@@ -46,11 +47,6 @@ function normalizedIdentity(identity) {
 
 function sameIdentity(left, right) {
   return JSON.stringify(normalizedIdentity(left)) === JSON.stringify(normalizedIdentity(right));
-}
-
-function isContained(parent, child) {
-  const path = relative(parent, child);
-  return path === '' || (!path.startsWith('..') && !isAbsolute(path));
 }
 
 function identityHash(identity) {
@@ -89,7 +85,7 @@ async function readIntent(root, managed) {
   const path = resolve(root, relativePath);
   const intentsDirectory = join(root, '.skills-manager/intents');
   await assertContainedStateDirectory(root, intentsDirectory);
-  if (!isContained(intentsDirectory, path)) {
+  if (!isPathContained(intentsDirectory, path)) {
     throw removalError('invalid_intent_state', 'Intent state path escapes its authorized directory.');
   }
   const info = await lstatIfExists(path);
@@ -160,7 +156,7 @@ async function verifyRendering(root, managed, scope) {
   const targets = [];
   for (const storedTarget of managed.physicalTargets) {
     const target = resolve(resolvedRoot, storedTarget);
-    if (!isContained(resolvedRoot, target)) {
+    if (!isPathContained(resolvedRoot, target)) {
       throw removalError('invalid_publication_target', 'A managed Rendering target escapes its scope.');
     }
     const info = await lstatIfExists(target);
@@ -172,8 +168,8 @@ async function verifyRendering(root, managed, scope) {
         choices: ['cancel'],
       });
     }
-    const resolvedTarget = await realpath(target);
-    if (!isContained(resolvedRoot, resolvedTarget)) {
+    const resolvedTarget = await resolveRealPathWithin(resolvedRoot, target);
+    if (!resolvedTarget) {
       throw removalError('invalid_publication_target', 'A managed Rendering resolves outside its scope.');
     }
     if ((await renderedHashForRoot(resolvedTarget)) !== managed.renderedHash) {
@@ -227,7 +223,7 @@ async function assertNoUnrecordedCopies({
     if (!resolved || !known.has(resolved)) {
       throw removalConflict({
         reason: 'unexplained_copy',
-        target: isContained(root, candidate) ? relative(root, candidate) : candidate,
+        target: isPathContained(root, candidate) ? relative(root, candidate) : candidate,
         explanation:
           'This exposed copy is not in managed state and must be reconciled outside managed removal.',
         choices: ['cancel'],
@@ -248,7 +244,7 @@ async function createRemovalRecovery(root, targets, managed) {
     const links = [];
     for (const link of managed.topologyLinks || []) {
       const path = resolve(root, link.path);
-      if (!isContained(root, path)) {
+      if (!isPathContained(root, path)) {
         throw removalError('invalid_publication_target', 'A managed topology link escapes its scope.');
       }
       const info = await lstatIfExists(path);
@@ -639,7 +635,7 @@ export async function removeManagedSkill({
     for (const link of managed.topologyLinks || []) {
       if (basename(link.path) !== managed.installName) continue;
       const linkPath = resolve(root, link.path);
-      if (!isContained(root, linkPath)) {
+      if (!isPathContained(root, linkPath)) {
         throw removalError('invalid_publication_target', 'A managed topology link escapes its scope.');
       }
       await rm(linkPath, { force: true });

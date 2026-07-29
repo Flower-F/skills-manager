@@ -15,6 +15,7 @@ import {
 } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 
+import { isPathContained, resolveRealPathWithin } from './path-policy.mjs';
 import { loadManifest, saveManifest } from './upstream.mjs';
 import { inspectEnvironment } from './inspect.mjs';
 
@@ -44,11 +45,6 @@ function simulateInterruption(boundary) {
   process.exit(86);
 }
 
-function isContained(parent, child) {
-  const path = relative(parent, child);
-  return path === '' || (!path.startsWith('..') && !isAbsolute(path));
-}
-
 async function enumerateTree(root) {
   const resolvedRoot = await realpath(root);
   const entries = [];
@@ -64,8 +60,8 @@ async function enumerateTree(root) {
         if (isAbsolute(link)) {
           throw managedError('validation_failed', `Absolute symbolic link is prohibited: ${relativePath}`);
         }
-        const resolved = await realpath(path).catch(() => null);
-        if (!resolved || !isContained(resolvedRoot, resolved)) {
+        const resolved = await resolveRealPathWithin(resolvedRoot, path).catch(() => null);
+        if (!resolved) {
           throw managedError('validation_failed', `Symbolic link escapes the candidate: ${relativePath}`);
         }
         entries.push({ path, relativePath, type: 'symlink', link });
@@ -125,11 +121,11 @@ async function validateReferences(root, markdownEntries) {
       }
       if (!target) continue;
       const lexicalTarget = resolve(dirname(entry.path), target);
-      if (!isContained(resolvedRoot, lexicalTarget)) {
+      if (!isPathContained(resolvedRoot, lexicalTarget)) {
         throw managedError('validation_failed', `Reference escapes the candidate: ${rawTarget}`);
       }
-      const resolvedTarget = await realpath(lexicalTarget).catch(() => null);
-      if (!resolvedTarget || !isContained(resolvedRoot, resolvedTarget)) {
+      const resolvedTarget = await resolveRealPathWithin(resolvedRoot, lexicalTarget).catch(() => null);
+      if (!resolvedTarget) {
         throw managedError('validation_failed', `Referenced resource is missing or unsafe: ${rawTarget}`);
       }
     }
@@ -165,8 +161,8 @@ export async function locateManagedRendering({ repositoryRoot, managed, expected
     if (!info?.isDirectory() || info.isSymbolicLink()) {
       throw managedError('untracked_change', 'A managed Rendering target is missing or not a real directory.');
     }
-    const resolvedTarget = await realpath(target);
-    if (!isContained(resolvedRepositoryRoot, resolvedTarget)) {
+    const resolvedTarget = await resolveRealPathWithin(resolvedRepositoryRoot, target);
+    if (!resolvedTarget) {
       throw managedError('invalid_publication_target', 'A managed Rendering target resolves outside the project.');
     }
     if (seen.has(resolvedTarget)) continue;
@@ -205,8 +201,8 @@ export async function locateManagedRenderingForRegeneration({ repositoryRoot, ma
     if (!info.isDirectory() || info.isSymbolicLink()) {
       throw managedError('untracked_change', 'A managed Rendering target is not a real directory.');
     }
-    const resolvedTarget = await realpath(target);
-    if (!isContained(resolvedRepositoryRoot, resolvedTarget)) {
+    const resolvedTarget = await resolveRealPathWithin(resolvedRepositoryRoot, target);
+    if (!resolvedTarget) {
       throw managedError('invalid_publication_target', 'A managed Rendering target resolves outside the project.');
     }
     if ((await renderedHashForRoot(resolvedTarget)) !== managed.renderedHash) {
@@ -333,7 +329,7 @@ function observedTopologyTargets(observation) {
       observation.repositoryRoot,
       target.kind === 'directory' &&
         target.resolvedPath &&
-        isContained(observation.repositoryRoot, target.resolvedPath)
+        isPathContained(observation.repositoryRoot, target.resolvedPath)
         ? target.resolvedPath
         : target.path,
     ),
@@ -344,7 +340,7 @@ function observedTopologyTargets(observation) {
     ...(target.resolvedPath === undefined
       ? {}
       : {
-          resolvedPath: isContained(observation.repositoryRoot, target.resolvedPath)
+          resolvedPath: isPathContained(observation.repositoryRoot, target.resolvedPath)
             ? relativeProjectPath(observation.repositoryRoot, target.resolvedPath)
             : target.resolvedPath,
         }),
@@ -375,7 +371,7 @@ export async function planProjectTopology(manifest) {
         const target = observation.targets.find(({ path }) => path === skillsDirectory);
         return target?.kind === 'directory' &&
           target.resolvedPath &&
-          isContained(observation.repositoryRoot, target.resolvedPath)
+          isPathContained(observation.repositoryRoot, target.resolvedPath)
           ? target.resolvedPath
           : skillsDirectory;
       }),
@@ -538,7 +534,7 @@ async function readJsonState(path, kind) {
       typeof storedPath === 'string' &&
       storedPath &&
       !isAbsolute(storedPath) &&
-      isContained(repositoryRoot, resolve(repositoryRoot, storedPath));
+      isPathContained(repositoryRoot, resolve(repositoryRoot, storedPath));
     if (
       value?.version !== 1 ||
       value.skills === null ||
@@ -583,7 +579,7 @@ async function readJsonState(path, kind) {
                 typeof link.target === 'string' &&
                 link.target &&
                 !isAbsolute(link.target) &&
-                isContained(
+                isPathContained(
                   repositoryRoot,
                   resolve(dirname(resolve(repositoryRoot, link.path)), link.target),
                 ) &&
@@ -612,8 +608,8 @@ export async function assertContainedStateDirectory(repositoryRoot, stateDirecto
   let existing = info ? stateDirectory : dirname(stateDirectory);
   while (!(await lstat(existing).catch(() => null))) existing = dirname(existing);
   const resolvedRoot = await realpath(repositoryRoot);
-  const resolved = await realpath(existing);
-  if (!isContained(resolvedRoot, resolved)) {
+  const resolved = await resolveRealPathWithin(resolvedRoot, existing);
+  if (!resolved) {
     throw managedError('invalid_publication_target', 'Managed-state directory resolves outside the project.');
   }
 }
@@ -621,8 +617,8 @@ export async function assertContainedStateDirectory(repositoryRoot, stateDirecto
 async function assertContainedExistingAncestor(repositoryRoot, path) {
   let existing = path;
   while (!(await lstat(existing).catch(() => null))) existing = dirname(existing);
-  const resolved = await realpath(existing).catch(() => null);
-  if (!resolved || !isContained(repositoryRoot, resolved)) {
+  const resolved = await resolveRealPathWithin(repositoryRoot, existing).catch(() => null);
+  if (!resolved) {
     throw managedError('invalid_publication_target', 'A publication parent resolves outside the project.');
   }
 }
@@ -634,14 +630,14 @@ async function ensureContainedDirectory(repositoryRoot, directory) {
     missingDirectories.push(existing);
     existing = dirname(existing);
   }
-  const resolvedExisting = await realpath(existing);
-  if (!isContained(repositoryRoot, resolvedExisting)) {
+  const resolvedExisting = await resolveRealPathWithin(repositoryRoot, existing);
+  if (!resolvedExisting) {
     throw managedError('invalid_publication_target', 'Publication target resolves outside the project.');
   }
   try {
     await mkdir(directory, { recursive: true });
-    const resolvedDirectory = await realpath(directory);
-    if (!isContained(repositoryRoot, resolvedDirectory)) {
+    const resolvedDirectory = await resolveRealPathWithin(repositoryRoot, directory);
+    if (!resolvedDirectory) {
       throw managedError('invalid_publication_target', 'Publication target resolves outside the project.');
     }
     return missingDirectories;
@@ -713,7 +709,7 @@ export async function publishAttempt({ workDir }) {
     throw managedError('invalid_publication_target', 'The publication topology is missing or invalid.');
   }
   const targets = relativeTargets.map((path) => resolve(repositoryRoot, path));
-  if (targets.some((target) => !isContained(repositoryRoot, target))) {
+  if (targets.some((target) => !isPathContained(repositoryRoot, target))) {
     throw managedError('invalid_publication_target', 'A publication target escapes the project.');
   }
   const links = plannedLinks.map((link) => ({
@@ -726,8 +722,8 @@ export async function publishAttempt({ workDir }) {
         typeof path !== 'string' ||
         typeof target !== 'string' ||
         isAbsolute(target) ||
-        !isContained(repositoryRoot, absolutePath) ||
-        !isContained(repositoryRoot, resolve(dirname(absolutePath), target)),
+        !isPathContained(repositoryRoot, absolutePath) ||
+        !isPathContained(repositoryRoot, resolve(dirname(absolutePath), target)),
     )
   ) {
     throw managedError('invalid_publication_target', 'A planned topology link is invalid.');
@@ -741,7 +737,7 @@ export async function publishAttempt({ workDir }) {
       ({ path, linkTarget, absolutePath }) =>
         typeof path !== 'string' ||
         typeof linkTarget !== 'string' ||
-        !isContained(repositoryRoot, absolutePath),
+        !isPathContained(repositoryRoot, absolutePath),
     )
   ) {
     throw managedError('invalid_publication_target', 'A planned directory replacement is invalid.');
@@ -969,7 +965,7 @@ export async function publishAttempt({ workDir }) {
       if (
         suppliedRoot !== root ||
         candidateState.relativePath !== expectedRelativePath ||
-        !isContained(intentsDirectory, absolutePath) ||
+        !isPathContained(intentsDirectory, absolutePath) ||
         JSON.stringify(candidateState.record?.identity) !== JSON.stringify(identity)
       ) {
         throw managedError('invalid_intent_state', 'The candidate Intent state is invalid or mismatched.');
@@ -990,7 +986,7 @@ export async function publishAttempt({ workDir }) {
       if (
         suppliedRoot !== root ||
         deletion.relativePath !== expectedDeletionPath ||
-        !isContained(intentsDirectory, absolutePath)
+        !isPathContained(intentsDirectory, absolutePath)
       ) {
         throw managedError('invalid_intent_state', 'An Intent migration deletion is invalid.');
       }
@@ -1023,7 +1019,7 @@ export async function publishAttempt({ workDir }) {
       if (
         suppliedRoot !== baselineRoot ||
         baseline.relativePath !== baselineExpectedRelativePath ||
-        !isContained(baselineDirectory, baselinePath)
+        !isPathContained(baselineDirectory, baselinePath)
       ) {
         throw managedError('invalid_intent_state', 'An Intent baseline is invalid or mismatched.');
       }
@@ -1186,8 +1182,8 @@ export async function publishAttempt({ workDir }) {
     for (const [index, link] of links.entries()) {
       await symlink(link.target, link.absolutePath, 'dir');
       createdLinks.push(link.absolutePath);
-      const resolvedLink = await realpath(link.absolutePath);
-      if (!isContained(repositoryRoot, resolvedLink)) {
+      const resolvedLink = await resolveRealPathWithin(repositoryRoot, link.absolutePath);
+      if (!resolvedLink) {
         throw managedError('invalid_publication_target', 'Published topology link escapes the project.');
       }
       simulateInterruption(`link:${index}`);
