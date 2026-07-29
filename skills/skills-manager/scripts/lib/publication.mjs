@@ -159,10 +159,13 @@ export async function renderedHashForRoot(root) {
   return hashEntries(await enumerateTree(root), true);
 }
 
-export async function locateManagedRendering({ repositoryRoot, managed, expectedHash = null }) {
+export async function locateManagedRenderingAssociations({
+  repositoryRoot,
+  managed,
+  expectedHash = null,
+}) {
   const resolvedRepositoryRoot = await realpath(repositoryRoot);
-  const targets = [];
-  const seen = new Set();
+  const associations = new Map();
   for (const storedTarget of managed.physicalTargets) {
     const target = resolve(resolvedRepositoryRoot, storedTarget);
     const info = await lstat(target).catch(() => null);
@@ -173,17 +176,29 @@ export async function locateManagedRendering({ repositoryRoot, managed, expected
     if (!resolvedTarget) {
       throw managedError('invalid_publication_target', 'A managed Rendering target resolves outside the project.');
     }
-    if (seen.has(resolvedTarget)) continue;
-    seen.add(resolvedTarget);
+    const existing = associations.get(resolvedTarget);
+    if (existing) {
+      existing.targets.push(storedTarget);
+      continue;
+    }
     if (expectedHash && (await renderedHashForRoot(resolvedTarget)) !== expectedHash) {
       throw managedError('untracked_change', 'A managed Rendering does not match managed state.');
     }
-    targets.push(resolvedTarget);
+    associations.set(resolvedTarget, { root: resolvedTarget, targets: [storedTarget] });
   }
-  if (targets.length === 0) {
+  if (associations.size === 0) {
     throw managedError('untracked_change', 'The managed Skill has no readable Rendering target.');
   }
-  return targets;
+  return [...associations.values()];
+}
+
+export async function locateManagedRendering({ repositoryRoot, managed, expectedHash = null }) {
+  const associations = await locateManagedRenderingAssociations({
+    repositoryRoot,
+    managed,
+    expectedHash,
+  });
+  return associations.map(({ root }) => root);
 }
 
 export async function verifyManagedRendering({ repositoryRoot, managed }) {

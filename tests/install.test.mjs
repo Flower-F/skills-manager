@@ -4291,6 +4291,83 @@ test('Archaeology recovers a changed secondary copy and reconverges every Render
   }
 });
 
+test('Archaeology keeps logical targets attached to deduplicated physical Renderings', async () => {
+  const repository = await temporaryDirectory('skills-manager-archaeology-deduplicated-targets-');
+  await mkdir(join(repository, '.git'));
+  await mkdir(join(repository, '.agents/skills'), { recursive: true });
+  await mkdir(join(repository, '.claude/skills'), { recursive: true });
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+  };
+  try {
+    await installManagedAlphaCopies(repository, fake, audit);
+    await mkdir(join(repository, '.factory'), { recursive: true });
+    await symlink('../.agents/skills', join(repository, '.factory/skills'));
+    const statePath = join(repository, '.skills-manager/state.json');
+    const state = JSON.parse(await readFile(statePath, 'utf8'));
+    const [stateKey, managed] = Object.entries(state.skills)[0];
+    state.skills[stateKey] = {
+      ...managed,
+      physicalTargets: [
+        '.agents/skills/alpha-skill',
+        '.factory/skills/alpha-skill',
+        '.claude/skills/alpha-skill',
+      ],
+    };
+    await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
+    await writeFile(
+      join(repository, '.agents/skills/alpha-skill/SKILL.md'),
+      '---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n# Shared physical change\n',
+    );
+    await writeFile(
+      join(repository, '.claude/skills/alpha-skill/SKILL.md'),
+      '---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n# Independent physical change\n',
+    );
+
+    const started = await runCli(
+      ['archaeology', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME, '--confirm-ownership'],
+      { cwd: repository, env: environment },
+    );
+    assert.equal(started.result.status, 'ready', JSON.stringify(started.result));
+    const order = await runCli(
+      ['archaeology-work-order', '--work-dir', started.result.data.workDir],
+      { cwd: repository, env: {} },
+    );
+    assert.equal(order.result.status, 'work_order', JSON.stringify(order.result));
+    assert.deepEqual(
+      order.result.data.untrackedRenderings.map(({ target, targets }) => ({ target, targets })),
+      [
+        {
+          target: '.agents/skills/alpha-skill',
+          targets: ['.agents/skills/alpha-skill', '.factory/skills/alpha-skill'],
+        },
+        {
+          target: '.claude/skills/alpha-skill',
+          targets: ['.claude/skills/alpha-skill'],
+        },
+      ],
+    );
+    assert.match(
+      await readFile(join(order.result.data.untrackedRenderings[0].root, 'SKILL.md'), 'utf8'),
+      /Shared physical change/,
+    );
+    assert.match(
+      await readFile(join(order.result.data.untrackedRenderings[1].root, 'SKILL.md'), 'utf8'),
+      /Independent physical change/,
+    );
+    await runCli(['abort', '--work-dir', started.result.data.workDir], {
+      cwd: repository,
+      env: {},
+    });
+  } finally {
+    await audit.close();
+  }
+});
+
 test('remove explains and retains project Intent state before deleting every managed copy', async () => {
   const repository = await temporaryDirectory('skills-manager-remove-project-');
   await mkdir(join(repository, '.git'));

@@ -13,6 +13,7 @@ import {
   createCandidateSnapshot,
   diffCandidateSnapshots,
   locateManagedRendering,
+  locateManagedRenderingAssociations,
   locateManagedRenderingForRegeneration,
   readManagedState,
   renderedHashForRoot,
@@ -807,13 +808,14 @@ export async function beginArchaeology({
     );
   }
   const managed = await requireManagedSkill(repositoryRoot, skill, environment);
-  const targets = await locateManagedRendering({ repositoryRoot, managed });
+  const associations = await locateManagedRenderingAssociations({ repositoryRoot, managed });
   const observations = await Promise.all(
-    targets.map(async (target, index) => ({
-      target: managed.physicalTargets[index],
-      root: target,
-      renderedHash: await renderedHashForRoot(target),
-      snapshot: await createCandidateSnapshot(target),
+    associations.map(async ({ root, targets }) => ({
+      target: targets[0],
+      targets,
+      root,
+      renderedHash: await renderedHashForRoot(root),
+      snapshot: await createCandidateSnapshot(root),
     })),
   );
   const changed = observations.filter(({ renderedHash }) => renderedHash !== managed.renderedHash);
@@ -844,10 +846,9 @@ export async function beginArchaeology({
       baselineManagedState: managed,
       baselineIntentStateHash: scoped.project.stateHash,
       untrackedRenderedHash: changed[0].renderedHash,
-      untrackedRenderedHashes: observations.map(({ target, renderedHash }) => ({
-        target,
-        renderedHash,
-      })),
+      untrackedRenderedHashes: observations.flatMap(({ targets, renderedHash }) =>
+        targets.map((target) => ({ target, renderedHash })),
+      ),
       untrackedRenderingSnapshot: observations[0].snapshot,
       untrackedRenderingSnapshots: observations.map(({ snapshot }) => snapshot),
     },
@@ -871,7 +872,12 @@ export async function beginArchaeology({
         choices: ['restart', 'cancel'],
       });
     }
-    untrackedRenderings.push({ target: observation.target, root, snapshot });
+    untrackedRenderings.push({
+      target: observation.target,
+      targets: observation.targets,
+      root,
+      snapshot,
+    });
   }
   const { manifest } = await loadManifest(assessed.workDir);
   const latestUpstreamSnapshot = await createCandidateSnapshot(manifest.candidateRoot);
@@ -887,7 +893,11 @@ export async function beginArchaeology({
     ...assessed,
     operation,
     untrackedRendering: { root: untrackedRenderings[0].root },
-    untrackedRenderings: untrackedRenderings.map(({ target, root }) => ({ target, root })),
+    untrackedRenderings: untrackedRenderings.map(({ target, targets, root }) => ({
+      target,
+      targets,
+      root,
+    })),
   };
 }
 
@@ -926,7 +936,11 @@ export async function prepareArchaeologyAttempt({ workDir }) {
     untrackedRendering: { root: manifest.operation.untrackedRoot },
     untrackedRenderings: (manifest.operation.untrackedRenderings || [
       { root: manifest.operation.untrackedRoot },
-    ]).map(({ target, root }) => ({ target, root })),
+    ]).map(({ target, targets, root }) => ({
+      target,
+      ...(targets ? { targets } : {}),
+      root,
+    })),
     nextAction: 'archaeology_work_order',
   };
 }
@@ -946,7 +960,11 @@ export async function createArchaeologyWorkOrder({ workDir }) {
     untrackedRendering: { root: manifest.operation.untrackedRoot },
     untrackedRenderings: (manifest.operation.untrackedRenderings || [
       { root: manifest.operation.untrackedRoot },
-    ]).map(({ target, root }) => ({ target, root })),
+    ]).map(({ target, targets, root }) => ({
+      target,
+      ...(targets ? { targets } : {}),
+      root,
+    })),
     latestUpstream: { root: manifest.candidateRoot },
     constraints: {
       output: 'concise_semantic_outcomes',
