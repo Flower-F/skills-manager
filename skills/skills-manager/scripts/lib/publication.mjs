@@ -54,6 +54,49 @@ function simulateInterruption(boundary) {
   process.exit(86);
 }
 
+function simulateFailure(boundary) {
+  if (process.env.SKILLS_MANAGER_SIMULATE_FAILURE !== boundary) return;
+  throw managedError('simulated_publication_failure', `Publication failed after ${boundary}.`);
+}
+
+function simulateRollbackFailure(step) {
+  if (process.env.SKILLS_MANAGER_SIMULATE_ROLLBACK_FAILURE !== step) return;
+  throw managedError('simulated_rollback_failure', `Rendering restoration failed during ${step}.`);
+}
+
+async function restoreDisplacedRenderings(targetBackups, publishedTargets) {
+  const failures = [];
+  const activatedTargets = new Set(publishedTargets);
+  for (const { target, backup } of [...targetBackups].reverse()) {
+    for (const [step, operation] of [
+      [
+        'remove_activated',
+        () => activatedTargets.has(target) && rm(target, { recursive: true, force: true }),
+      ],
+      [
+        'restore_previous',
+        () => {
+          simulateRollbackFailure('restore_previous');
+          return rename(backup, target);
+        },
+      ],
+    ]) {
+      try {
+        await operation();
+      } catch (error) {
+        failures.push({
+          target,
+          backup,
+          step,
+          code: error?.code,
+          message: error?.message,
+        });
+      }
+    }
+  }
+  return failures;
+}
+
 async function enumerateTree(root) {
   const resolvedRoot = await realpath(root);
   const entries = [];
@@ -1186,6 +1229,7 @@ export async function publishAttempt({ workDir }) {
       await rename(siblings[index], targets[index]);
       publishedTargets.push(targets[index]);
       simulateInterruption(`target_activated:${index}`);
+      simulateFailure(`target_activated:${index}`);
     }
     for (const [index, link] of links.entries()) {
       await symlink(link.target, link.absolutePath, 'dir');
@@ -1198,9 +1242,14 @@ export async function publishAttempt({ workDir }) {
     }
   } catch (error) {
     for (const link of createdLinks.reverse()) await rm(link, { force: true });
-    for (const target of publishedTargets.reverse()) await rm(target, { recursive: true, force: true });
-    for (const { target, backup } of targetBackups.reverse()) {
-      await rename(backup, target).catch(() => {});
+    const backedUpTargets = new Set(targetBackups.map(({ target }) => target));
+    for (const target of [...publishedTargets].reverse()) {
+      if (backedUpTargets.has(target)) continue;
+      await rm(target, { recursive: true, force: true });
+    }
+    const rollbackFailures = await restoreDisplacedRenderings(targetBackups, publishedTargets);
+    if (rollbackFailures.length > 0) {
+      error.details = { ...(error.details || {}), rollbackFailures };
     }
     for (const sibling of siblings) await rm(sibling, { recursive: true, force: true });
     for (const replacement of replacedDirectories.reverse()) {

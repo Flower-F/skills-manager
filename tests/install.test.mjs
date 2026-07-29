@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { chmod, cp, lstat, mkdir, mkdtemp, readFile, readdir, readlink, realpath, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -1030,6 +1030,70 @@ test('a late link-publication failure rolls back targets, links, state, and lock
     await assert.rejects(lstat(join(repository, 'skills-lock.json')), { code: 'ENOENT' });
   } finally {
     await chmod(join(repository, '.factory'), 0o700);
+    await audit.close();
+  }
+});
+
+test('publication reports restoration failures without hiding the initiating error', async () => {
+  const repository = await temporaryDirectory('skills-manager-publication-rollback-failure-');
+  await mkdir(join(repository, '.git'));
+  const fake = await fakeUpstream(await temporaryDirectory('skills-manager-install-upstream-'));
+  const audit = await auditService();
+  const environment = {
+    FAKE_UPSTREAM_CALLS: fake.calls,
+    SKILLS_MANAGER_AUDIT_URL: audit.url,
+    SKILLS_MANAGER_NPX_PATH: fake.executable,
+    FAKE_UPSTREAM_SKILL_CONTENT:
+      '---\nname: alpha-skill\ndescription: Updated candidate.\n---\n\n# Updated upstream\n',
+  };
+  try {
+    await installManagedAlphaCopies(repository, fake, audit);
+    const updated = await runCli(['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME], {
+      cwd: repository,
+      env: environment,
+    });
+    if (updated.result.status === 'conflict') {
+      const continued = await runCli(
+        ['continue', '--work-dir', updated.result.data.workDir, '--accept-copy-mode'],
+        { cwd: repository, env: {} },
+      );
+      assert.equal(continued.result.status, 'needs_confirmation', JSON.stringify(continued.result));
+    } else {
+      assert.equal(updated.result.status, 'needs_confirmation', JSON.stringify(updated.result));
+    }
+    const published = await runCli(
+      ['publish', '--work-dir', updated.result.data.workDir, '--accept-publication'],
+      {
+        cwd: repository,
+        env: {
+          SKILLS_MANAGER_SIMULATE_FAILURE: 'target_activated:1',
+          SKILLS_MANAGER_SIMULATE_ROLLBACK_FAILURE: 'restore_previous',
+        },
+      },
+    );
+    assert.equal(published.result.status, 'failed', JSON.stringify(published.result));
+    assert.equal(published.result.error.code, 'simulated_publication_failure');
+    const resolvedRepository = await realpath(repository);
+    assert.deepEqual(
+      published.result.error.details.rollbackFailures.map(({ target, step, code }) => ({
+        target,
+        step,
+        code,
+      })),
+      [
+        {
+          target: join(resolvedRepository, '.claude/skills/alpha-skill'),
+          step: 'restore_previous',
+          code: 'simulated_rollback_failure',
+        },
+        {
+          target: join(resolvedRepository, '.agents/skills/alpha-skill'),
+          step: 'restore_previous',
+          code: 'simulated_rollback_failure',
+        },
+      ],
+    );
+  } finally {
     await audit.close();
   }
 });
