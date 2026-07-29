@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import test from 'node:test';
+import { TEST_RUNTIME } from './constants.mjs';
 
 const cli = resolve('skills/skills-manager/scripts/skills-manager.mjs');
 
@@ -134,7 +135,7 @@ test('assess classifies malformed, timed-out, and failed audit responses for con
             '--skill',
             'alpha-skill',
             '--runtime',
-            'codex',
+            TEST_RUNTIME,
           ],
           {
             cwd: repository,
@@ -176,7 +177,7 @@ test('assess reports structured reasons for unknown and missing security results
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       {
         cwd: repository,
@@ -204,7 +205,7 @@ test('assess treats a connection failure as confirmation without exposing the ca
   const repository = await temporaryDirectory('skills-manager-connection-failure-repository-');
   const fake = await fakeUpstream(await temporaryDirectory('skills-manager-fake-upstream-'));
   const invocation = await runCli(
-    ['assess', '--source', 'example/skills', '--skill', 'alpha-skill', '--runtime', 'codex'],
+    ['assess', '--source', 'example/skills', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
     {
       cwd: repository,
       env: {
@@ -244,7 +245,7 @@ test('discover returns candidate identifiers through the JSON protocol using the
   const fake = await fakeUpstream(await temporaryDirectory('skills-manager-fake-upstream-'));
 
   const invocation = await runCli(
-    ['discover', '--source', 'example/skills', '--runtime', 'codex'],
+    ['discover', '--source', 'example/skills', '--runtime', TEST_RUNTIME],
     {
       cwd: repository,
       env: {
@@ -284,7 +285,7 @@ test('discover fails closed when the pinned upstream list format drifts', async 
   const fake = await fakeUpstream(await temporaryDirectory('skills-manager-fake-upstream-'));
 
   const invocation = await runCli(
-    ['discover', '--source', 'example/skills', '--runtime', 'codex'],
+    ['discover', '--source', 'example/skills', '--runtime', TEST_RUNTIME],
     {
       cwd: repository,
       env: {
@@ -305,7 +306,7 @@ test('discover fails closed when the pinned upstream list format drifts', async 
 test('commands reject options that do not apply to their protocol', async () => {
   const repository = await temporaryDirectory('skills-manager-invalid-options-repository-');
   const invocation = await runCli(
-    ['discover', '--source', 'example/skills', '--runtime', 'codex', '--accept-risk'],
+    ['discover', '--source', 'example/skills', '--runtime', TEST_RUNTIME, '--accept-risk'],
     { cwd: repository, env: {} },
   );
 
@@ -335,7 +336,7 @@ test('assess acquires a safe candidate outside the workspace and returns a norma
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       {
         cwd: repository,
@@ -354,7 +355,7 @@ test('assess acquires a safe candidate outside the workspace and returns a norma
       type: 'install',
       source: 'example/skills',
       skill: 'alpha-skill',
-      runtime: 'codex',
+      runtime: TEST_RUNTIME,
       scope: 'project',
     });
     assert.deepEqual(invocation.result.data.security, {
@@ -386,7 +387,7 @@ test('assess acquires a safe candidate outside the workspace and returns a norma
       '--skill',
       'alpha-skill',
       '--agent',
-      'codex',
+      TEST_RUNTIME,
       '--yes',
     ]);
     assert.equal(calls[0].telemetry, '1');
@@ -438,7 +439,7 @@ test('assess rejects and cleans up a candidate root that escapes through a symbo
   const fake = await fakeUpstream(await temporaryDirectory('skills-manager-fake-upstream-'));
 
   const invocation = await runCli(
-    ['assess', '--source', 'example/skills', '--skill', 'alpha-skill', '--runtime', 'codex'],
+    ['assess', '--source', 'example/skills', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
     {
       cwd: repository,
       env: {
@@ -462,7 +463,7 @@ test('assess cleans up its unreferenced Update attempt when upstream acquisition
   const fake = await fakeUpstream(await temporaryDirectory('skills-manager-fake-upstream-'));
 
   const invocation = await runCli(
-    ['assess', '--source', 'example/skills', '--skill', 'alpha-skill', '--runtime', 'codex'],
+    ['assess', '--source', 'example/skills', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
     {
       cwd: repository,
       env: {
@@ -499,7 +500,7 @@ test('assess returns needs_confirmation for a medium security rating without exp
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       {
         cwd: repository,
@@ -551,7 +552,7 @@ test('continue accepts risk only for the exact proposed operation in its disposa
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       {
         cwd: repository,
@@ -607,7 +608,7 @@ test('abort removes a rejected candidate attempt without changing the workspace'
 
   try {
     const assessed = await runCli(
-      ['assess', '--source', 'example/skills', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['assess', '--source', 'example/skills', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       {
         cwd: repository,
         env: {

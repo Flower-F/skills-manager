@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import test from 'node:test';
+import { TEST_RUNTIME } from './constants.mjs';
 
 const cli = resolve('skills/skills-manager/scripts/skills-manager.mjs');
 
@@ -55,7 +56,7 @@ if (command === 'remove') {
   const skill = process.argv[process.argv.indexOf('remove') + 1];
   const runtime = process.argv[process.argv.indexOf('--agent') + 1];
   const global = process.argv.includes('--global');
-  const directory = global && runtime === 'codex'
+  const directory = global && runtime === ${JSON.stringify(TEST_RUNTIME)}
     ? '.codex/skills/'
     : runtime === 'claude-code'
       ? '.claude/skills/'
@@ -146,7 +147,7 @@ async function runCli(args, options) {
   return { exitCode, stderr, result: JSON.parse(stdout) };
 }
 
-async function assessedAttempt(repository, fake, audit, extraEnvironment = {}, runtime = 'codex') {
+async function assessedAttempt(repository, fake, audit, extraEnvironment = {}, runtime = TEST_RUNTIME) {
   return runCli(
     ['assess', '--source', 'example/skills', '--skill', 'alpha-skill', '--runtime', runtime],
     {
@@ -655,7 +656,7 @@ test('an explicitly global installation publishes state and Rendering only under
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       { cwd: repository, env: environment },
     );
@@ -1096,7 +1097,7 @@ test('Intent input is constrained to one concise semantic outcome', async () => 
       '--intent',
       'User said this.\nAgent replied with that.',
       '--runtime',
-      'codex',
+      TEST_RUNTIME,
     ],
     { cwd: repository, env: {} },
   );
@@ -1113,7 +1114,7 @@ test('an approved Intent rerenders from latest upstream through work order, resu
   try {
     await installManagedAlpha(repository, fake, audit);
     const begun = await runCli(
-      ['intent-add', '--skill', 'alpha-skill', '--intent', intentText, '--runtime', 'codex'],
+      ['intent-add', '--skill', 'alpha-skill', '--intent', intentText, '--runtime', TEST_RUNTIME],
       {
         cwd: repository,
         env: {
@@ -1235,7 +1236,7 @@ test('Intent candidates fail closed when an Agent adds an escaping symlink', asy
         '--intent',
         'Link to the repository policy.',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       {
         cwd: repository,
@@ -1270,7 +1271,7 @@ test('adding another Intent preserves and reapplies the complete Effective-inten
   const audit = await auditService();
   const addAndPublish = async (intent, renderedBody) => {
     const begun = await runCli(
-      ['intent-add', '--skill', 'alpha-skill', '--intent', intent, '--runtime', 'codex'],
+      ['intent-add', '--skill', 'alpha-skill', '--intent', intent, '--runtime', TEST_RUNTIME],
       {
         cwd: repository,
         env: {
@@ -1343,7 +1344,7 @@ test('Intent work orders reject a managed Rendering replaced by an external link
   try {
     await installManagedAlpha(repository, fake, audit);
     const begun = await runCli(
-      ['intent-add', '--skill', 'alpha-skill', '--intent', 'Prefer concise output.', '--runtime', 'codex'],
+      ['intent-add', '--skill', 'alpha-skill', '--intent', 'Prefer concise output.', '--runtime', TEST_RUNTIME],
       {
         cwd: repository,
         env: {
@@ -1377,7 +1378,7 @@ test('intent-add rejects an external Intent-state directory before reading recor
     await installManagedAlpha(repository, fake, audit);
     await symlink(external, join(repository, '.skills-manager/intents'));
     const begun = await runCli(
-      ['intent-add', '--skill', 'alpha-skill', '--intent', 'Prefer concise output.', '--runtime', 'codex'],
+      ['intent-add', '--skill', 'alpha-skill', '--intent', 'Prefer concise output.', '--runtime', TEST_RUNTIME],
       {
         cwd: repository,
         env: {
@@ -1407,11 +1408,11 @@ test('overlapping Intent additions cannot overwrite a newly published Intent bas
   try {
     await installManagedAlpha(repository, fake, audit);
     const first = await runCli(
-      ['intent-add', '--skill', 'alpha-skill', '--intent', 'Prefer concise output.', '--runtime', 'codex'],
+      ['intent-add', '--skill', 'alpha-skill', '--intent', 'Prefer concise output.', '--runtime', TEST_RUNTIME],
       { cwd: repository, env: environment },
     );
     const second = await runCli(
-      ['intent-add', '--skill', 'alpha-skill', '--intent', 'Include failure guidance.', '--runtime', 'codex'],
+      ['intent-add', '--skill', 'alpha-skill', '--intent', 'Include failure guidance.', '--runtime', TEST_RUNTIME],
       { cwd: repository, env: environment },
     );
     for (const attempt of [first, second]) {
@@ -1462,7 +1463,7 @@ test('Intent validation rejects staging lock changes after the work order', asyn
   try {
     await installManagedAlpha(repository, fake, audit);
     const begun = await runCli(
-      ['intent-add', '--skill', 'alpha-skill', '--intent', 'Prefer concise output.', '--runtime', 'codex'],
+      ['intent-add', '--skill', 'alpha-skill', '--intent', 'Prefer concise output.', '--runtime', TEST_RUNTIME],
       {
         cwd: repository,
         env: {
@@ -1505,7 +1506,7 @@ test('Intent publication rejects an external nested Intent-state link', async ()
   try {
     await installManagedAlpha(repository, fake, audit);
     const begun = await runCli(
-      ['intent-add', '--skill', 'alpha-skill', '--intent', 'Prefer concise output.', '--runtime', 'codex'],
+      ['intent-add', '--skill', 'alpha-skill', '--intent', 'Prefer concise output.', '--runtime', TEST_RUNTIME],
       {
         cwd: repository,
         env: {
@@ -1555,7 +1556,7 @@ test('new files in an Intent result require explicit scope confirmation before r
         '--intent',
         'Add a short local reference with usage guidance.',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       {
         cwd: repository,
@@ -1612,7 +1613,7 @@ test('changed-file confirmation cannot approve later unreviewed candidate edits'
         '--intent',
         'Add a short local reference.',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       {
         cwd: repository,
@@ -1651,7 +1652,7 @@ test('changed-file confirmation cannot approve later unreviewed candidate edits'
 
 async function publishOneIntent(repository, fake, audit, intent, body = 'Apply the Intent.') {
   const begun = await runCli(
-    ['intent-add', '--skill', 'alpha-skill', '--intent', intent, '--runtime', 'codex'],
+    ['intent-add', '--skill', 'alpha-skill', '--intent', intent, '--runtime', TEST_RUNTIME],
     {
       cwd: repository,
       env: {
@@ -1696,7 +1697,7 @@ test('update starts from latest upstream and reapplies every Effective Intent', 
     await installManagedAlpha(repository, fake, audit);
     await publishOneIntent(repository, fake, audit, 'Prefer concise examples.', 'Use concise examples.');
     const updated = await runCli(
-      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       {
         cwd: repository,
         env: {
@@ -1770,7 +1771,7 @@ test('update checks the installed Rendering hash before fetching upstream', asyn
       '---\nname: alpha-skill\ndescription: Manual edit.\n---\n',
     );
     const updated = await runCli(
-      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       {
         cwd: repository,
         env: {
@@ -1798,7 +1799,7 @@ test('a bare upstream update skips semantic work and publishes after review', as
   try {
     await installManagedAlpha(repository, fake, audit);
     const updated = await runCli(
-      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       {
         cwd: repository,
         env: {
@@ -1839,7 +1840,7 @@ test('a no-change bare update completes without replacing the workspace Renderin
     const target = join(repository, '.agents/skills/alpha-skill');
     const before = await lstat(target);
     const updated = await runCli(
-      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       {
         cwd: repository,
         env: {
@@ -1870,7 +1871,7 @@ test('a no-change customized update skips a redundant semantic work order', asyn
     const target = join(repository, '.agents/skills/alpha-skill');
     const before = await lstat(target);
     const updated = await runCli(
-      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       {
         cwd: repository,
         env: {
@@ -1901,7 +1902,7 @@ test('update does not report no-change while desired and published Rendering has
     managed.desiredRenderedHash = 'f'.repeat(64);
     await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
     const updated = await runCli(
-      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       {
         cwd: repository,
         env: {
@@ -1961,7 +1962,7 @@ test('update heals interrupted desired Renderings and rejects unexplained diverg
         await writeFile(statePath, `${JSON.stringify(state, null, 2)}\n`);
         const callsBefore = (await readFile(fake.calls, 'utf8')).trim().split('\n').length;
         const recovered = await runCli(
-          ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+          ['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
           { cwd: repository, env: environment },
         );
         if (scenario === 'unexplained_copy') {
@@ -2012,7 +2013,7 @@ test('interrupted publication without any complete copy regenerates from latest 
     await rm(join(repository, '.agents/skills/alpha-skill'), { recursive: true });
 
     const regenerated = await runCli(
-      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       { cwd: repository, env: environment },
     );
     assert.equal(regenerated.result.status, 'needs_confirmation', JSON.stringify(regenerated.result));
@@ -2059,7 +2060,7 @@ test('interrupted regeneration reapplies every Effective Intent before publicati
     await rm(join(repository, '.agents/skills/alpha-skill'), { recursive: true });
 
     const regenerated = await runCli(
-      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       { cwd: repository, env: environment },
     );
     assert.equal(regenerated.result.status, 'ready', JSON.stringify(regenerated.result));
@@ -2120,7 +2121,7 @@ test('recovery ignores lookalike artifacts and refuses parents that resolve outs
       );
       await mkdir(lookalike);
       await writeFile(join(lookalike, 'user.txt'), 'preserve me\n');
-      await runCli(['update', '--skill', 'alpha-skill', '--runtime', 'codex'], {
+      await runCli(['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME], {
         cwd: repository,
         env: environment,
       });
@@ -2145,7 +2146,7 @@ test('recovery ignores lookalike artifacts and refuses parents that resolve outs
       const external = await temporaryDirectory('skills-manager-external-parent-');
       await rename(join(repository, '.agents'), join(repository, '.agents-original'));
       await symlink(external, join(repository, '.agents'), 'dir');
-      const attempted = await runCli(['update', '--skill', 'alpha-skill', '--runtime', 'codex'], {
+      const attempted = await runCli(['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME], {
         cwd: repository,
         env: environment,
       });
@@ -2186,7 +2187,7 @@ test('the next update recovers every injected publication boundary', async (t) =
           },
         );
         assert.equal(interrupted.result.error.code, 'simulated_interruption');
-        const resumed = await runCli(['update', '--skill', 'alpha-skill', '--runtime', 'codex'], {
+        const resumed = await runCli(['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME], {
           cwd: repository,
           env: environment,
         });
@@ -2241,7 +2242,7 @@ test('the next update recovers every injected publication boundary', async (t) =
       };
       try {
         await installManagedAlphaCopies(repository, fake, audit);
-        const updated = await runCli(['update', '--skill', 'alpha-skill', '--runtime', 'codex'], {
+        const updated = await runCli(['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME], {
           cwd: repository,
           env: environment,
         });
@@ -2261,7 +2262,7 @@ test('the next update recovers every injected publication boundary', async (t) =
           },
         );
         assert.equal(interrupted.result.error.code, 'simulated_interruption');
-        const resumed = await runCli(['update', '--skill', 'alpha-skill', '--runtime', 'codex'], {
+        const resumed = await runCli(['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME], {
           cwd: repository,
           env: environment,
         });
@@ -2320,7 +2321,7 @@ test('an update semantic conflict pauses and an explicitly adapted result can co
       'Never publish automatically.\n\nInclude failure guidance.',
     );
     const updated = await runCli(
-      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       {
         cwd: repository,
         env: {
@@ -2421,7 +2422,7 @@ test('an obsolete update result requires an explicit keep decision before review
     await installManagedAlpha(repository, fake, audit);
     await publishOneIntent(repository, fake, audit, 'Prefer concise examples.', 'Use concise examples.');
     const updated = await runCli(
-      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       {
         cwd: repository,
         env: updateEnvironment,
@@ -2470,7 +2471,7 @@ test('an obsolete update result requires an explicit keep decision before review
     });
 
     const expiring = await runCli(
-      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       { cwd: repository, env: updateEnvironment },
     );
     const expiringOrder = await runCli(
@@ -2599,7 +2600,7 @@ test('Intent lifecycle mutations rerender latest upstream and commit only with p
       '--intent',
       'Prefer one concise example.',
       '--runtime',
-      'codex',
+      TEST_RUNTIME,
     ]);
     assert.equal(edited.result.status, 'ready');
     listed = await list();
@@ -2619,7 +2620,7 @@ test('Intent lifecycle mutations rerender latest upstream and commit only with p
       '--intent-id',
       secondId,
       '--runtime',
-      'codex',
+      TEST_RUNTIME,
     ]);
     await completeIntentMutation({ repository, started: disabled, body: 'One concise example.' });
     listed = await list();
@@ -2633,7 +2634,7 @@ test('Intent lifecycle mutations rerender latest upstream and commit only with p
       '--intent-id',
       secondId,
       '--runtime',
-      'codex',
+      TEST_RUNTIME,
     ]);
     await completeIntentMutation({
       repository,
@@ -2652,7 +2653,7 @@ test('Intent lifecycle mutations rerender latest upstream and commit only with p
       '--reason',
       'Latest upstream now provides a concise example.',
       '--runtime',
-      'codex',
+      TEST_RUNTIME,
     ]);
     await completeIntentMutation({ repository, started: obsolete, body: 'Failure guidance.' });
     listed = await list();
@@ -2669,7 +2670,7 @@ test('Intent lifecycle mutations rerender latest upstream and commit only with p
       '--intent-id',
       firstId,
       '--runtime',
-      'codex',
+      TEST_RUNTIME,
     ]);
     assert.equal(proposedDelete.result.status, 'conflict');
     assert.equal(proposedDelete.result.data.reason, 'permanent_intent_deletion');
@@ -2681,7 +2682,7 @@ test('Intent lifecycle mutations rerender latest upstream and commit only with p
       '--intent-id',
       firstId,
       '--runtime',
-      'codex',
+      TEST_RUNTIME,
       '--confirm-delete',
     ]);
     await completeIntentMutation({ repository, started: deletedFirst, body: 'Failure guidance.' });
@@ -2695,7 +2696,7 @@ test('Intent lifecycle mutations rerender latest upstream and commit only with p
       '--intent-id',
       secondId,
       '--runtime',
-      'codex',
+      TEST_RUNTIME,
       '--confirm-delete',
     ]);
     await completeIntentMutation({ repository, started: deletedLast, body: '' });
@@ -2726,7 +2727,7 @@ test('an obsolete newly proposed Intent can be explicitly persisted as expired',
         '--intent',
         'Prefer concise examples.',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       {
         cwd: repository,
@@ -2815,7 +2816,7 @@ test('a failed lifecycle regeneration leaves Intent state and Rendering unchange
         '--intent',
         'Prefer exactly one concise example.',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       {
         cwd: repository,
@@ -2943,7 +2944,7 @@ test('global and project Intents form a deterministic union and project suppress
         '--intent',
         'Include global safety guidance.',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       { cwd: repository, env: environment },
     );
@@ -2966,7 +2967,7 @@ test('global and project Intents form a deterministic union and project suppress
         '--intent',
         'Prefer concise project examples.',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       { cwd: repository, env: environment },
     );
@@ -3006,7 +3007,7 @@ test('global and project Intents form a deterministic union and project suppress
         '--intent-id',
         globalId,
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       { cwd: repository, env: environment },
     );
@@ -3042,7 +3043,7 @@ test('global and project Intents form a deterministic union and project suppress
         '--intent-id',
         globalId,
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       { cwd: repository, env: environment },
     );
@@ -3130,7 +3131,7 @@ test('the same Intent id with different scoped semantics returns both competing 
         '--intent',
         'Use global wording.',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       { cwd: repository, env: environment },
     );
@@ -3165,7 +3166,7 @@ test('the same Intent id with different scoped semantics returns both competing 
         '--intent-id',
         'shared',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       { cwd: repository, env: environment },
     );
@@ -3320,7 +3321,7 @@ test('ambiguous managed identities and global-only installations require explici
         '--intent',
         'Require a project Rendering.',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       { cwd: repository, env: { HOME: globalHome } },
     );
@@ -3349,7 +3350,7 @@ test('ambiguous managed identities and global-only installations require explici
         '--intent',
         'Promote this global outcome.',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       {
         cwd: repository,
@@ -3402,7 +3403,7 @@ test('ambiguous managed identities and global-only installations require explici
         '--intent-id',
         promotedId,
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       {
         cwd: repository,
@@ -3470,7 +3471,7 @@ test('semantic conflicts preserve the global and project interpretations for use
       `${JSON.stringify({ ...base, intents: [{ id: 'project-rule', text: 'Never publish.', state: 'active' }] }, null, 2)}\n`,
     );
     const started = await runCli(
-      ['update', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       { cwd: repository, env: environment },
     );
     const ordered = await runCli(['work-order', '--work-dir', started.result.data.workDir], {
@@ -3531,7 +3532,7 @@ test('marking an inherited global Intent obsolete updates its owner without losi
         '--intent',
         'Retire me when upstream covers this.',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       { cwd: repository, env: environment },
     );
@@ -3547,7 +3548,7 @@ test('marking an inherited global Intent obsolete updates its owner without losi
       () => [],
     );
 
-    const updated = await runCli(['update', '--skill', 'alpha-skill', '--runtime', 'codex'], {
+    const updated = await runCli(['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME], {
       cwd: repository,
       env: {
         ...environment,
@@ -3637,7 +3638,7 @@ test('global Intent publication rejects manifest root tampering and external sta
         '--intent',
         'Keep state contained.',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       { cwd: repository, env: environment },
     );
@@ -3678,7 +3679,7 @@ test('global Intent publication rejects manifest root tampering and external sta
         '--intent',
         'Reject linked state.',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       { cwd: repository, env: environment },
     );
@@ -3758,7 +3759,7 @@ test('identity migration rebinds Intents through semantic rendering and reviewed
         '--choice',
         'migrate',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       { cwd: repository, env: environment },
     );
@@ -3788,7 +3789,7 @@ test('identity migration rebinds Intents through semantic rendering and reviewed
         '--choice',
         'migrate',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       { cwd: repository, env: environment },
     );
@@ -3835,7 +3836,7 @@ test('an ordinary Update cannot be tampered into an identity migration', async (
   };
   try {
     await installManagedAlpha(repository, fake, audit);
-    const updated = await runCli(['update', '--skill', 'alpha-skill', '--runtime', 'codex'], {
+    const updated = await runCli(['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME], {
       cwd: repository,
       env: environment,
     });
@@ -3880,7 +3881,7 @@ test('Archaeology decline leaves an Untracked change untouched without fetching 
     const beforeState = await readFile(join(repository, '.skills-manager/state.json'), 'utf8');
     const beforeRendering = await readFile(renderingPath, 'utf8');
     const callsBefore = (await readFile(fake.calls, 'utf8')).trim().split('\n').length;
-    const update = await runCli(['update', '--skill', 'alpha-skill', '--runtime', 'codex'], {
+    const update = await runCli(['update', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME], {
       cwd: repository,
       env: {
         FAKE_UPSTREAM_CALLS: fake.calls,
@@ -3892,7 +3893,7 @@ test('Archaeology decline leaves an Untracked change untouched without fetching 
     assert.equal(update.result.data.reason, 'untracked_change');
     assert.deepEqual(update.result.data.choices, ['recover', 'decline', 'cancel']);
     const declined = await runCli(
-      ['archaeology', '--skill', 'alpha-skill', '--runtime', 'codex', '--decline-ownership'],
+      ['archaeology', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME, '--decline-ownership'],
       {
         cwd: repository,
         env: {
@@ -3932,7 +3933,7 @@ test('Archaeology confirms individual outcomes and regenerates from latest upstr
       '---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n# Manual\n\nBe concise and include a risky automatic action.\n',
     );
     const started = await runCli(
-      ['archaeology', '--skill', 'alpha-skill', '--runtime', 'codex', '--confirm-ownership'],
+      ['archaeology', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME, '--confirm-ownership'],
       { cwd: repository, env: environment },
     );
     assert.equal(started.result.status, 'ready', JSON.stringify(started.result));
@@ -4052,7 +4053,7 @@ test('Archaeology rejects approval after a comparison root changes', async () =>
       '---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n# Manual\n',
     );
     const started = await runCli(
-      ['archaeology', '--skill', 'alpha-skill', '--runtime', 'codex', '--confirm-ownership'],
+      ['archaeology', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME, '--confirm-ownership'],
       { cwd: repository, env: environment },
     );
     await runCli(['archaeology-work-order', '--work-dir', started.result.data.workDir], {
@@ -4118,7 +4119,7 @@ test('Archaeology recovers a changed secondary copy and reconverges every Render
       '---\nname: alpha-skill\ndescription: Candidate description.\n---\n\n# Secondary manual change\n',
     );
     const started = await runCli(
-      ['archaeology', '--skill', 'alpha-skill', '--runtime', 'codex', '--confirm-ownership'],
+      ['archaeology', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME, '--confirm-ownership'],
       { cwd: repository, env: environment },
     );
     assert.equal(started.result.status, 'ready', JSON.stringify(started.result));
@@ -4232,7 +4233,7 @@ test('remove explains and retains project Intent state before deleting every man
       }, null, 2)}\n`,
     );
     const conflicted = await runCli(
-      ['remove', '--scope', 'project', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['remove', '--scope', 'project', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       { cwd: repository, env: environment },
     );
     assert.equal(conflicted.result.status, 'conflict');
@@ -4250,7 +4251,7 @@ test('remove explains and retains project Intent state before deleting every man
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
         '--scope',
         'project',
         '--source',
@@ -4284,7 +4285,7 @@ test('remove explains and retains project Intent state before deleting every man
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
         '--source',
         'example/skills',
         '--upstream-skill',
@@ -4306,7 +4307,7 @@ test('remove explains and retains project Intent state before deleting every man
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
         '--intent-policy',
         'retain',
       ],
@@ -4321,7 +4322,7 @@ test('remove explains and retains project Intent state before deleting every man
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
         '--source',
         'example/skills',
         '--upstream-skill',
@@ -4351,7 +4352,7 @@ test('remove explains and retains project Intent state before deleting every man
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
         '--source',
         'example/skills',
         '--upstream-skill',
@@ -4374,7 +4375,7 @@ test('remove explains and retains project Intent state before deleting every man
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
         '--intent-policy',
         'retain',
       ],
@@ -4387,7 +4388,7 @@ test('remove explains and retains project Intent state before deleting every man
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
         '--scope',
         'project',
         '--source',
@@ -4419,7 +4420,7 @@ test('remove explains and retains project Intent state before deleting every man
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
         '--source',
         'example/skills',
         '--upstream-skill',
@@ -4435,7 +4436,7 @@ test('remove explains and retains project Intent state before deleting every man
       'remove',
       'alpha-skill',
       '--agent',
-      'codex',
+      TEST_RUNTIME,
       '--yes',
     ]);
   } finally {
@@ -4468,7 +4469,7 @@ test('project removal confirms inherited global exposure and global removal pres
     };
     await writeFile(globalStatePath, `${JSON.stringify(ambiguousGlobalState, null, 2)}\n`);
     const ambiguousGlobal = await runCli(
-      ['remove', '--scope', 'global', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['remove', '--scope', 'global', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       { cwd: repository, env: environment },
     );
     assert.equal(ambiguousGlobal.result.status, 'conflict');
@@ -4502,7 +4503,7 @@ test('project removal confirms inherited global exposure and global removal pres
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
         '--source',
         'example/skills',
         '--upstream-skill',
@@ -4521,7 +4522,7 @@ test('project removal confirms inherited global exposure and global removal pres
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
         '--confirm-exposure',
       ],
       { cwd: repository, env: environment },
@@ -4533,7 +4534,7 @@ test('project removal confirms inherited global exposure and global removal pres
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
         '--scope',
         'project',
         '--source',
@@ -4551,7 +4552,7 @@ test('project removal confirms inherited global exposure and global removal pres
     assert.ok(await lstat(join(globalHome, '.codex/skills/alpha-skill')));
 
     const globalOnlyPreview = await runCli(
-      ['remove', '--scope', 'global', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['remove', '--scope', 'global', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       { cwd: repository, env: environment },
     );
     assert.equal(globalOnlyPreview.result.status, 'needs_confirmation');
@@ -4563,7 +4564,7 @@ test('project removal confirms inherited global exposure and global removal pres
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
         '--source',
         'example/skills',
         '--upstream-skill',
@@ -4580,7 +4581,7 @@ test('project removal confirms inherited global exposure and global removal pres
     await installManagedAlpha(repository, fake, audit);
     await cloneManagedAlphaToGlobal(repository, globalHome);
     const globalPreview = await runCli(
-      ['remove', '--scope', 'global', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['remove', '--scope', 'global', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       { cwd: repository, env: environment },
     );
     assert.equal(globalPreview.result.status, 'needs_confirmation');
@@ -4592,7 +4593,7 @@ test('project removal confirms inherited global exposure and global removal pres
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
         '--source',
         'example/skills',
         '--upstream-skill',
@@ -4626,13 +4627,13 @@ test('failed delegated removal preserves Rendering, state, and lock metadata', a
     const stateBefore = await readFile(join(repository, '.skills-manager/state.json'), 'utf8');
     const lockBefore = await readFile(join(repository, 'skills-lock.json'), 'utf8');
     const implicitScope = await runCli(
-      ['remove', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['remove', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       { cwd: repository, env: {} },
     );
     assert.equal(implicitScope.result.status, 'failed');
     assert.equal(implicitScope.result.error.code, 'invalid_arguments');
     const preview = await runCli(
-      ['remove', '--scope', 'project', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['remove', '--scope', 'project', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       { cwd: repository, env: {} },
     );
     assert.equal(preview.result.status, 'needs_confirmation');
@@ -4646,7 +4647,7 @@ test('failed delegated removal preserves Rendering, state, and lock metadata', a
         '--skill',
         'alpha-skill',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
         '--source',
         'example/skills',
         '--upstream-skill',
@@ -4677,7 +4678,7 @@ test('failed delegated removal preserves Rendering, state, and lock metadata', a
     await writeFile(marker, 'outside\n');
     await symlink(external, join(repository, '.skills-manager/intents'));
     const unsafe = await runCli(
-      ['remove', '--scope', 'project', '--skill', 'alpha-skill', '--runtime', 'codex'],
+      ['remove', '--scope', 'project', '--skill', 'alpha-skill', '--runtime', TEST_RUNTIME],
       { cwd: repository, env: {} },
     );
     assert.equal(unsafe.result.status, 'failed');
@@ -4707,7 +4708,7 @@ test('self-update publishes completely and requires an immediate Agent restart',
         '--skill',
         'skills-manager',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       { cwd: repository, env: environment },
     );
@@ -4723,7 +4724,7 @@ test('self-update publishes completely and requires an immediate Agent restart',
     assert.equal(installed.result.status, 'complete');
 
     const updated = await runCli(
-      ['update', '--skill', 'skills-manager', '--runtime', 'codex'],
+      ['update', '--skill', 'skills-manager', '--runtime', TEST_RUNTIME],
       {
         cwd: repository,
         env: {
@@ -4777,7 +4778,7 @@ test('global self-update changes only the selected global manager Rendering', as
   };
   try {
     const assessed = await runCli(
-      ['assess', '--source', 'example/skills', '--skill', 'skills-manager', '--runtime', 'codex'],
+      ['assess', '--source', 'example/skills', '--skill', 'skills-manager', '--runtime', TEST_RUNTIME],
       { cwd: repository, env: environment },
     );
     await runCli(['validate', '--work-dir', assessed.result.data.workDir], {
@@ -4795,7 +4796,7 @@ test('global self-update changes only the selected global manager Rendering', as
     );
 
     const updated = await runCli(
-      ['update', '--scope', 'global', '--skill', 'skills-manager', '--runtime', 'codex'],
+      ['update', '--scope', 'global', '--skill', 'skills-manager', '--runtime', TEST_RUNTIME],
       {
         cwd: repository,
         env: {
@@ -4837,7 +4838,7 @@ test('a manager Intent mutation commits with restart_required as terminal public
   };
   try {
     const assessed = await runCli(
-      ['assess', '--source', 'example/skills', '--skill', 'skills-manager', '--runtime', 'codex'],
+      ['assess', '--source', 'example/skills', '--skill', 'skills-manager', '--runtime', TEST_RUNTIME],
       { cwd: repository, env: environment },
     );
     await runCli(['validate', '--work-dir', assessed.result.data.workDir], {
@@ -4857,7 +4858,7 @@ test('a manager Intent mutation commits with restart_required as terminal public
         '--intent',
         'Keep manager guidance concise.',
         '--runtime',
-        'codex',
+        TEST_RUNTIME,
       ],
       { cwd: repository, env: environment },
     );

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import test from 'node:test';
+import { TEST_RUNTIME } from './constants.mjs';
 
 const cli = resolve('skills/skills-manager/scripts/skills-manager.mjs');
 
@@ -50,7 +51,7 @@ test('inspect defaults to project scope and falls back only to the current runti
   const repository = await temporaryDirectory('skills-manager-empty-');
   const before = await tree(repository);
 
-  const invocation = await runCli(['inspect', '--runtime', 'codex'], { cwd: repository });
+  const invocation = await runCli(['inspect', '--runtime', TEST_RUNTIME], { cwd: repository });
 
   assert.equal(invocation.exitCode, 0);
   assert.equal(invocation.stderr, '');
@@ -61,7 +62,7 @@ test('inspect defaults to project scope and falls back only to the current runti
     data: {
       repositoryRoot: repository,
       scope: 'project',
-      currentRuntime: 'codex',
+      currentRuntime: TEST_RUNTIME,
       compatibility: {
         node: { minimumMajor: 22, current: process.versions.node },
         skillsCli: { version: '1.5.20', telemetryDisabled: true },
@@ -70,7 +71,7 @@ test('inspect defaults to project scope and falls back only to the current runti
       topology: 'empty',
       runtimes: [
         {
-          id: 'codex',
+          id: TEST_RUNTIME,
           skillsDirectory: join(repository, '.agents/skills'),
           relativeSkillsDirectory: '.agents/skills',
           evidence: ['current_runtime'],
@@ -83,7 +84,7 @@ test('inspect defaults to project scope and falls back only to the current runti
           relativePath: '.agents/skills',
           kind: 'missing',
           role: 'planned',
-          runtimes: ['codex'],
+          runtimes: [TEST_RUNTIME],
         },
       ],
     },
@@ -99,11 +100,11 @@ test('inspect reports canonical directories, copies, and symbolic links from obs
   await mkdir(join(repository, '.factory/skills'), { recursive: true });
   const before = await tree(repository);
 
-  const { exitCode, result } = await runCli(['inspect', '--runtime', 'codex'], { cwd: repository });
+  const { exitCode, result } = await runCli(['inspect', '--runtime', TEST_RUNTIME], { cwd: repository });
 
   assert.equal(exitCode, 0);
   assert.equal(result.data.topology, 'mixed');
-  assert.deepEqual(result.data.runtimes.map(({ id }) => id), ['claude-code', 'codex', 'droid']);
+  assert.deepEqual(result.data.runtimes.map(({ id }) => id), ['claude-code', TEST_RUNTIME, 'droid']);
   assert.deepEqual(
     result.data.targets.map(({ relativePath, kind, role, runtimes }) => ({
       relativePath,
@@ -116,7 +117,7 @@ test('inspect reports canonical directories, copies, and symbolic links from obs
         relativePath: '.agents/skills',
         kind: 'directory',
         role: 'canonical',
-        runtimes: ['codex'],
+        runtimes: [TEST_RUNTIME],
       },
       {
         relativePath: '.claude/skills',
@@ -175,20 +176,20 @@ test('an existing Agent directory is runtime evidence before its skills director
   const repository = await temporaryDirectory('skills-manager-agent-evidence-');
   await mkdir(join(repository, '.claude'));
 
-  const { exitCode, result } = await runCli(['inspect', '--runtime', 'codex'], { cwd: repository });
+  const { exitCode, result } = await runCli(['inspect', '--runtime', TEST_RUNTIME], { cwd: repository });
 
   assert.equal(exitCode, 0);
   assert.deepEqual(
     result.data.runtimes.map(({ id, evidence }) => ({ id, evidence })),
     [
       { id: 'claude-code', evidence: ['agent_directory'] },
-      { id: 'codex', evidence: ['current_runtime'] },
+      { id: TEST_RUNTIME, evidence: ['current_runtime'] },
     ],
   );
   assert.deepEqual(
     result.data.targets.map(({ relativePath, kind, runtimes }) => ({ relativePath, kind, runtimes })),
     [
-      { relativePath: '.agents/skills', kind: 'missing', runtimes: ['codex'] },
+      { relativePath: '.agents/skills', kind: 'missing', runtimes: [TEST_RUNTIME] },
       { relativePath: '.claude/skills', kind: 'missing', runtimes: ['claude-code'] },
     ],
   );
@@ -198,10 +199,10 @@ test('ordinary GitHub repository metadata is not mistaken for a Copilot runtime'
   const repository = await temporaryDirectory('skills-manager-github-metadata-');
   await mkdir(join(repository, '.github/workflows'), { recursive: true });
 
-  const { exitCode, result } = await runCli(['inspect', '--runtime', 'codex'], { cwd: repository });
+  const { exitCode, result } = await runCli(['inspect', '--runtime', TEST_RUNTIME], { cwd: repository });
 
   assert.equal(exitCode, 0);
-  assert.deepEqual(result.data.runtimes.map(({ id }) => id), ['codex']);
+  assert.deepEqual(result.data.runtimes.map(({ id }) => id), [TEST_RUNTIME]);
   assert.deepEqual(result.data.targets.map(({ relativePath }) => relativePath), ['.agents/skills']);
 });
 
@@ -214,7 +215,7 @@ test('inspect supports explicitly selected global scope without changing it', as
   const before = await tree(workspace);
 
   const { exitCode, result } = await runCli(
-    ['inspect', '--runtime', 'codex', '--scope', 'global'],
+    ['inspect', '--runtime', TEST_RUNTIME, '--scope', 'global'],
     { cwd: repository, env: { CODEX_HOME: codexHome } },
   );
 
@@ -246,7 +247,7 @@ test('unsupported Node versions fail before command dispatch or filesystem inspe
   const before = await tree(repository);
   const script = [
     "Object.defineProperty(process, 'version', { value: 'v20.19.0' });",
-    `process.argv = [process.execPath, ${JSON.stringify(cli)}, 'inspect', '--runtime', 'codex'];`,
+    `process.argv = [process.execPath, ${JSON.stringify(cli)}, 'inspect', '--runtime', ${JSON.stringify(TEST_RUNTIME)}];`,
     `await import(${JSON.stringify(`file://${cli}`)});`,
   ].join('');
   const child = spawn(process.execPath, ['--input-type=module', '--eval', script], {

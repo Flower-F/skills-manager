@@ -7,8 +7,8 @@
     "skills-manager": "skills/skills-manager/scripts/skills-manager.mjs"
   },
   "scripts": {
-    "test": "node --test",
-    "typecheck": "node --check skills/skills-manager/scripts/skills-manager.mjs && node --check skills/skills-manager/scripts/lib/*.mjs && node --check test/*.mjs"
+    "test": "node --test tests/*.test.mjs",
+    "typecheck": "node --check skills/skills-manager/scripts/skills-manager.mjs && node --check skills/skills-manager/scripts/lib/*.mjs && node --check tests/*.mjs"
   },
   "engines": {
     "node": ">=22"
