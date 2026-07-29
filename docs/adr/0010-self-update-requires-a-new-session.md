@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0017
+---
+
 # Self-update completes before a new session
 
 `skills-manager` may update or customize its own Skill identity through the normal isolated staging, validation, review, and publication workflow. The current Agent already loaded the old `SKILL.md`, and the publishing CLI process already loaded the code needed to finish its operation, so this does not by itself prevent complete replacement.

@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0017
+---
+
 # CLI owns the security assessment boundary
 
 The Agent does not call the upstream audit endpoint, inspect its raw JSON, or parse the formatted terminal table printed by `npx skills`. A `skills-manager` security adapter calls the same audit service used by the supported `skills` version, validates and normalizes the response, and exposes only stable structured status and a human-readable summary.

@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0017
+---
+
 # User resolves semantic state conflicts
 
 When an operation would discard, contradict, or ambiguously preserve user-approved semantic state, `skills-manager` returns `conflict` and makes no change. It reports the conflicting state and concrete resolution choices; the Agent explains them and obtains the user's decision before invoking the CLI again with that explicit choice.

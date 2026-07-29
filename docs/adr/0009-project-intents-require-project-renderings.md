@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0017
+---
+
 # Project Intents require project Renderings
 
 A project Intent may only affect a project-scoped Rendering. It never mutates a global Rendering shared by other projects. Global Intents may participate in either global or project Renderings.

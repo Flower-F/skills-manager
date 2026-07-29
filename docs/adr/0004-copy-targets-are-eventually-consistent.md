@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0017
+---
+
 # Copy targets are eventually consistent
 
 Managed skills may have multiple independent copy targets when symlinks are unavailable or the user explicitly accepts copy mode. The CLI prepares and validates a complete sibling candidate for every physical target, then replaces targets one directory at a time.

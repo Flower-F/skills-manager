@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0017
+---
+
 # Do not persist operation reports
 
 The first version does not create `.skills/reports/` or any other permanent prose report for installs, updates, or Intent mutations. The CLI returns the current operation's normalized security summary, per-Intent result statuses, validation result, and diff for immediate review.

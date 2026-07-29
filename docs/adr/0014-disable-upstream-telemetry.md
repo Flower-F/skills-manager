@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0017
+---
+
 # Disable upstream skills telemetry
 
 Every `npx skills` subprocess launched by `skills-manager` receives `DISABLE_TELEMETRY=1`. The adapter applies this unconditionally for project and global operations and for public and private sources.

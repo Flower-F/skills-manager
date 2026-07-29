@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0017
+---
+
 # Single CLI owns the managed skill workflow
 
 Use one `skills-manager` CLI as the deterministic execution boundary for managed skill operations. It owns runtime mapping, repository and symlink inspection, `npx skills` argument planning, temporary staging, structural validation, complete publication, and abort, and reports structured states to the Agent.

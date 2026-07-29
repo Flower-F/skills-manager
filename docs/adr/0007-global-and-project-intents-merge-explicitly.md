@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0017
+---
+
 # Global and project Intents merge explicitly
 
 Effective intents for one Skill identity are the union of active global and project Intents, minus global Intent ids explicitly suppressed by the project. Project scope has no implicit precedence over global scope.

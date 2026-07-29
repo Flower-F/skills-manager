@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0017
+---
+
 # Intents bind to upstream skill identity
 
 An Intent record belongs to a Skill identity composed of normalized upstream source and upstream skill identifier. The installed directory name or display alias is mutable deployment metadata and is not sufficient identity.

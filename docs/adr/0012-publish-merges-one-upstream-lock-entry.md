@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0017
+---
+
 # Publish merges one upstream lock entry
 
 Because `npx skills` runs inside the disposable operating-system work directory, the lock file it creates is also temporary. Publication extracts only the target Skill identity's entry and merges it into the lock file for the actual installation scope. It never copies the complete staging lock file, which could overwrite unrelated installed-skill metadata.

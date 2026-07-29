@@ -1,3 +1,7 @@
+---
+status: superseded by ADR-0017
+---
+
 # Intent mutations rerender the installed skill
 
 Creating, updating, deleting, disabling, or suppressing an Intent is incomplete until the installed Rendering has been regenerated from upstream content plus the new Effective intents, validated, reviewed, and published.
