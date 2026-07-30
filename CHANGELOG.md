@@ -2,7 +2,7 @@
 
 All notable changes to Skills Manager are documented here.
 
-## [0.1.0] - Unreleased
+## [0.1.0] - 2026-07-30
 
 Initial public release as a Public Preview.
 
