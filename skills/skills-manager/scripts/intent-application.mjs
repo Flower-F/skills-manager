@@ -4,13 +4,21 @@ import { isUtf8 } from 'node:buffer';
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { cp, lstat, mkdtemp, readFile, readdir, readlink, realpath, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { basename, join, relative, resolve, sep } from 'node:path';
 
 const VERSION = 1;
 const HANDLE_PREFIX = 'skills-manager-intent-application-';
 const METADATA_FILE = 'handle.json';
 const BASELINE_DIRECTORY = 'baseline';
+const INSTALLATION_OPTIONS = ['name', 'source', 'scope', 'path'];
+const OPERATION_SCHEMAS = Object.freeze({
+  preflight: { required: ['name'], optional: ['scope'] },
+  capture: { required: INSTALLATION_OPTIONS, optional: [] },
+  review: { required: [...INSTALLATION_OPTIONS, 'handle', 'marker'], optional: [] },
+  close: { required: [...INSTALLATION_OPTIONS, 'handle', 'marker', 'outcome'], optional: [] },
+  'verify-fulfillment': { required: INSTALLATION_OPTIONS, optional: [] },
+});
 
 class OperationError extends Error {
   constructor(code, message, exitCode = 1) {
@@ -22,8 +30,9 @@ class OperationError extends Error {
 
 function parseArguments(argv) {
   const [operation, ...rest] = argv;
-  if (!['capture', 'review', 'close'].includes(operation)) {
-    throw new OperationError('invalid_arguments', 'Usage: intent-application capture|review|close [options]', 2);
+  const schema = OPERATION_SCHEMAS[operation];
+  if (!schema) {
+    throw new OperationError('invalid_arguments', 'Usage: intent-application preflight|capture|review|close|verify-fulfillment [options]', 2);
   }
   const options = {};
   for (let index = 0; index < rest.length; index += 2) {
@@ -36,17 +45,14 @@ function parseArguments(argv) {
     if (options[key] !== undefined) throw new OperationError('invalid_arguments', `Duplicate option ${flag}.`, 2);
     options[key] = value;
   }
-  for (const key of ['name', 'source', 'scope', 'path']) {
+  for (const key of schema.required) {
     if (!options[key]?.trim()) throw new OperationError('invalid_arguments', `Missing required option --${key}.`, 2);
   }
-  if (!['project', 'global'].includes(options.scope)) throw new OperationError('invalid_arguments', '--scope must be project or global.', 2);
-  if (operation !== 'capture') {
-    for (const key of ['handle', 'marker']) if (!options[key]?.trim()) throw new OperationError('invalid_arguments', `Missing required option --${key}.`, 2);
-  }
+  if (options.scope !== undefined && !['project', 'global'].includes(options.scope)) throw new OperationError('invalid_arguments', '--scope must be project or global.', 2);
   if (operation === 'close' && !['complete', 'conflict', 'cancelled'].includes(options.outcome)) {
     throw new OperationError('invalid_arguments', '--outcome must be complete, conflict, or cancelled.', 2);
   }
-  const allowed = new Set(['name', 'source', 'scope', 'path', ...(operation === 'capture' ? [] : ['handle', 'marker']), ...(operation === 'close' ? ['outcome'] : [])]);
+  const allowed = new Set([...schema.required, ...schema.optional]);
   for (const key of Object.keys(options)) if (!allowed.has(key)) throw new OperationError('invalid_arguments', `Unsupported option --${key}.`, 2);
   return { operation, options };
 }
@@ -69,10 +75,12 @@ function normalizeSource(source) {
 function publicSource(entry) {
   const source = typeof entry.sourceUrl === 'string' && entry.sourceUrl.trim() ? entry.sourceUrl : entry.source;
   if (typeof source !== 'string' || !source.trim()) throw new OperationError('malformed_listing', 'Installation source metadata is missing or malformed.');
-  return normalizeSource(source);
+  const normalized = normalizeSource(source);
+  if (!normalized) throw new OperationError('malformed_listing', 'Installation source metadata normalizes to an empty identity.');
+  return normalized;
 }
 
-function validateEntry(entry) {
+function validateEntry(entry, expectedScope) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new OperationError('malformed_listing', 'Public list output contains a malformed Installation.');
   for (const field of ['name', 'path', 'scope']) {
     if (typeof entry[field] !== 'string' || !entry[field].trim()) throw new OperationError('malformed_listing', `Installation field ${field} is missing or malformed.`);
@@ -80,12 +88,14 @@ function validateEntry(entry) {
   if (!Array.isArray(entry.agents) || entry.agents.length === 0 || entry.agents.some((agent) => typeof agent !== 'string' || !agent.trim())) {
     throw new OperationError('malformed_listing', 'Installation field agents is missing or malformed.');
   }
+  if (typeof entry.sourceType !== 'string' || !entry.sourceType.trim()) throw new OperationError('malformed_listing', 'Installation field sourceType is missing or malformed.');
+  if (entry.scope !== expectedScope) throw new OperationError('malformed_listing', `Public ${expectedScope} listing returned an Installation with ${entry.scope} scope.`);
+  publicSource(entry);
   return entry;
 }
 
-async function runList(scope) {
-  const args = ['skills', 'list', '--json', ...(scope === 'global' ? ['--global'] : [])];
-  const child = spawn('npx', args, { cwd: process.cwd(), env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
+async function runSkillsCommand(args, cwd = process.cwd()) {
+  const child = spawn('npx', ['skills', ...args], { cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
   let stdout = '';
   let stderr = '';
   child.stdout.setEncoding('utf8');
@@ -96,19 +106,112 @@ async function runList(scope) {
     child.on('error', reject);
     child.on('close', done);
   });
-  if (exitCode !== 0) throw new OperationError('listing_failed', `Public ${scope} Installation listing failed${stderr.trim() ? `: ${stderr.trim()}` : '.'}`);
+  return { exitCode, stdout, stderr };
+}
+
+async function runList(scope, cwd = process.cwd()) {
+  const result = await runSkillsCommand(['list', '--json', ...(scope === 'global' ? ['--global'] : [])], cwd);
+  if (result.exitCode !== 0) throw new OperationError('listing_failed', `Public ${scope} Installation listing failed${result.stderr.trim() ? `: ${result.stderr.trim()}` : '.'}`);
   let entries;
   try {
-    entries = JSON.parse(stdout);
+    entries = JSON.parse(result.stdout);
   } catch {
     throw new OperationError('malformed_listing', `Public ${scope} Installation listing returned malformed JSON.`);
   }
   if (!Array.isArray(entries)) throw new OperationError('malformed_listing', `Public ${scope} Installation listing did not return an array.`);
-  return entries.map(validateEntry);
+  return entries.map((entry) => validateEntry(entry, scope));
+}
+
+function intentDirectory(scope) {
+  if (scope === 'project') return join(process.cwd(), '.skills-manager', 'intents');
+  return join(process.env.XDG_CONFIG_HOME || join(homedir(), '.config'), 'skills-manager', 'intents');
+}
+
+function identitySlug(value) {
+  return [...Buffer.from(value, 'utf8')].map((byte) => {
+    const character = String.fromCharCode(byte);
+    return /[a-zA-Z0-9._]/.test(character) ? character : `-${byte.toString(16).toUpperCase().padStart(2, '0')}`;
+  }).join('');
+}
+
+function parseIntentDocument(content, path, installation) {
+  const match = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(content);
+  if (!match) throw new OperationError('invalid_intent', `Intent document ${path} has malformed frontmatter.`);
+  const metadata = {};
+  for (const line of match[1].split('\n')) {
+    const separator = line.indexOf(':');
+    if (separator < 1) throw new OperationError('invalid_intent', `Intent document ${path} has malformed frontmatter.`);
+    const key = line.slice(0, separator).trim();
+    if (metadata[key] !== undefined) throw new OperationError('invalid_intent', `Intent document ${path} repeats identity field ${key}.`);
+    metadata[key] = line.slice(separator + 1).trim();
+  }
+  for (const field of ['source', 'skill', 'scope']) if (!metadata[field]) throw new OperationError('invalid_intent', `Intent document ${path} is missing identity field ${field}.`);
+  for (const field of Object.keys(metadata)) if (!['source', 'skill', 'scope'].includes(field)) throw new OperationError('invalid_intent', `Intent document ${path} contains unsupported identity field ${field}.`);
+  if (normalizeSource(metadata.source) !== installation.source || metadata.skill !== installation.name || metadata.scope !== installation.scope) {
+    throw new OperationError('intent_identity_mismatch', `Intent document ${path} does not match the selected Installation identity.`);
+  }
+  const lines = content.slice(match[0].length).trim().split('\n');
+  if (lines.shift() !== '# Active Intents') throw new OperationError('invalid_intent', `Intent document ${path} has no supported active Intent list.`);
+  const outcomes = [];
+  for (const line of lines) {
+    if (!line.trim()) continue;
+    const bullet = /^-\s+(\S.*)$/.exec(line);
+    if (bullet) outcomes.push(bullet[1]);
+    else if (outcomes.length > 0 && /^\s{2,}\S/.test(line)) outcomes[outcomes.length - 1] += `\n${line.trim()}`;
+    else throw new OperationError('invalid_intent', `Intent document ${path} contains unsupported content outside the active Intent list.`);
+  }
+  if (outcomes.length === 0) throw new OperationError('invalid_intent', `Intent document ${path} contains no active Intent.`);
+  return outcomes;
+}
+
+async function readIntent(installation) {
+  const filename = `${identitySlug(installation.source)}--${identitySlug(installation.name)}.md`;
+  const path = join(intentDirectory(installation.scope), filename);
+  let content;
+  try {
+    const buffer = await readFile(path);
+    if (!isUtf8(buffer)) throw new OperationError('invalid_intent', `Intent document ${path} is not readable UTF-8.`);
+    content = buffer.toString('utf8');
+  } catch (error) {
+    if (error.code === 'ENOENT') return { status: 'absent', outcomes: [] };
+    throw error;
+  }
+  return { status: 'active', outcomes: parseIntentDocument(content, path, installation) };
+}
+
+async function preflight(options) {
+  const project = await runList('project');
+  const global = await runList('global');
+  const matches = [...project, ...global].filter((entry) => entry.name === options.name);
+  if (project.filter((entry) => entry.name === options.name).length > 1 || global.filter((entry) => entry.name === options.name).length > 1) {
+    throw new OperationError('duplicate_installation', `Public listing returned duplicate ${options.name} Installations in one scope.`);
+  }
+  const selected = options.scope ? matches.filter((entry) => entry.scope === options.scope) : matches;
+  if (!options.scope && new Set(matches.map((entry) => entry.scope)).size > 1) {
+    throw new OperationError('scope_ambiguous', `${options.name} is installed in both project and global scope.`);
+  }
+  if (selected.length !== 1) throw new OperationError('installation_not_found', `Expected exactly one selected Installation named ${options.name}.`);
+  const entry = selected[0];
+  const installation = { name: entry.name, source: publicSource(entry), scope: entry.scope, path: resolve(entry.path), agents: [...entry.agents] };
+  await resolveDirectory(installation.path, 'installation_unavailable', 'The selected installed path is not an accessible directory.');
+  const intent = await readIntent(installation);
+  return { version: VERSION, operation: 'preflight', status: 'complete', installation, intent };
 }
 
 function expectedInstallation(options) {
-  return { name: options.name, source: normalizeSource(options.source), scope: options.scope, path: resolve(options.path) };
+  const source = normalizeSource(options.source);
+  if (!source) throw new OperationError('invalid_arguments', 'Expected source normalizes to an empty identity.', 2);
+  return { name: options.name, source, scope: options.scope, path: resolve(options.path) };
+}
+
+async function resolveDirectory(path, code, message) {
+  try {
+    const root = await realpath(path);
+    if (!(await lstat(root)).isDirectory()) throw new Error('not a directory');
+    return root;
+  } catch {
+    throw new OperationError(code, message);
+  }
 }
 
 async function selectInstallation(options) {
@@ -123,13 +226,7 @@ async function selectInstallation(options) {
   if (publicSource(entry) !== expected.source) mismatches.push('source');
   if (actualPath !== expected.path) mismatches.push('path');
   if (mismatches.length) throw new OperationError('identity_mismatch', `Installation ${mismatches.join(', ')} did not match the expected identity.`);
-  let installed;
-  try {
-    installed = await realpath(actualPath);
-    if (!(await lstat(installed)).isDirectory()) throw new Error('not a directory');
-  } catch {
-    throw new OperationError('installation_unavailable', 'The expected installed path is not an accessible directory.');
-  }
+  const installed = await resolveDirectory(actualPath, 'installation_unavailable', 'The expected installed path is not an accessible directory.');
   return { identity: { ...expected, path: actualPath }, installed };
 }
 
@@ -214,6 +311,14 @@ async function tree(root) {
   return entries;
 }
 
+function changedPathsBetween(left, right) {
+  return [...new Set([...left.keys(), ...right.keys()])].sort().filter((path) => {
+    const before = left.get(path);
+    const after = right.get(path);
+    return !before || !after || before.kind !== after.kind || !before.content.equals(after.content);
+  });
+}
+
 function isText(entry) {
   return entry && entry.kind !== 'file' ? true : entry && !entry.content.includes(0) && isUtf8(entry.content);
 }
@@ -293,9 +398,9 @@ function unifiedHunks(before, after) {
   }).join('');
 }
 
-function filePatch(path, before, after) {
-  const beforeLabel = before ? `baseline/${path}` : '/dev/null';
-  const afterLabel = after ? `installation/${path}` : '/dev/null';
+function filePatch(path, before, after, labels = { before: 'baseline', after: 'installation' }) {
+  const beforeLabel = before ? `${labels.before}/${path}` : '/dev/null';
+  const afterLabel = after ? `${labels.after}/${path}` : '/dev/null';
   if ((before && !isText(before)) || (after && !isText(after))) return `Binary files ${beforeLabel} and ${afterLabel} differ\n`;
   const hunks = unifiedHunks(textLines(before), textLines(after));
   return [
@@ -307,21 +412,39 @@ function filePatch(path, before, after) {
   ].join('\n');
 }
 
+async function verifyFulfillment(options) {
+  const installation = expectedInstallation(options);
+  const installedRoot = await resolveDirectory(installation.path, 'installation_unavailable', 'The expected installed path is not an accessible directory.');
+  const work = await mkdtemp(join(tmpdir(), 'skills-manager-fulfillment-'));
+  try {
+    const acquired = await runSkillsCommand(['add', installation.source, '--skill', installation.name, '--agent', 'universal', '--copy', '--yes'], work);
+    if (acquired.exitCode !== 0) throw new OperationError('clean_acquisition_failed', `Clean upstream acquisition failed${acquired.stderr.trim() ? `: ${acquired.stderr.trim()}` : '.'}`);
+    const candidates = (await runList('project', work)).filter((entry) => entry.name === installation.name);
+    if (candidates.length !== 1) throw new OperationError('clean_acquisition_failed', `Clean acquisition did not expose exactly one selected Skill named ${installation.name}.`);
+    if (publicSource(candidates[0]) !== installation.source) throw new OperationError('clean_source_mismatch', 'Clean acquisition returned a different source identity.');
+    const cleanRoot = await resolveDirectory(resolve(candidates[0].path), 'clean_acquisition_failed', 'Clean acquisition path is not an accessible directory.');
+    const workRoot = await realpath(work);
+    if (!(cleanRoot === workRoot || cleanRoot.startsWith(`${workRoot}${sep}`))) throw new OperationError('clean_acquisition_failed', 'Clean acquisition path escaped temporary storage.');
+    const [clean, installed] = await Promise.all([tree(cleanRoot), tree(installedRoot)]);
+    const changedPaths = changedPathsBetween(clean, installed);
+    return {
+      version: VERSION,
+      operation: 'verify-fulfillment',
+      status: 'verification_ready',
+      installation,
+      changedPaths,
+      patch: changedPaths.map((path) => filePatch(path, clean.get(path), installed.get(path), { before: 'clean-upstream', after: 'installation' })).join(''),
+    };
+  } finally {
+    await rm(work, { recursive: true, force: true });
+  }
+}
+
 async function review(options) {
   const handle = await validateHandle(options);
-  let installationRoot;
-  try {
-    installationRoot = await realpath(resolve(handle.metadata.installation.path));
-    if (!(await lstat(installationRoot)).isDirectory()) throw new Error('missing');
-  } catch {
-    throw new OperationError('installation_unavailable', 'The Installation no longer exists.');
-  }
+  const installationRoot = await resolveDirectory(resolve(handle.metadata.installation.path), 'installation_unavailable', 'The Installation no longer exists.');
   const [before, after] = await Promise.all([tree(join(handle.canonicalPath, BASELINE_DIRECTORY)), tree(installationRoot)]);
-  const changedPaths = [...new Set([...before.keys(), ...after.keys()])].sort().filter((path) => {
-    const left = before.get(path);
-    const right = after.get(path);
-    return !left || !right || left.kind !== right.kind || !left.content.equals(right.content);
-  });
+  const changedPaths = changedPathsBetween(before, after);
   return {
     version: VERSION,
     operation: 'review',
@@ -343,14 +466,15 @@ let parsed;
 try {
   parsed = parseArguments(process.argv.slice(2));
   operation = parsed.operation;
-  const result = parsed.operation === 'capture' ? await capture(parsed.options) : parsed.operation === 'review' ? await review(parsed.options) : await close(parsed.options);
+  const handlers = { preflight, capture, review, close, 'verify-fulfillment': verifyFulfillment };
+  const result = await handlers[parsed.operation](parsed.options);
   process.stdout.write(`${JSON.stringify(result)}\n`);
 } catch (error) {
   const result = {
     version: VERSION,
     operation,
     status: 'failed',
-    ...(parsed ? { installation: expectedInstallation(parsed.options) } : {}),
+    ...(parsed?.options.source && parsed?.options.path ? { installation: expectedInstallation(parsed.options) } : {}),
     error: { code: error instanceof OperationError ? error.code : 'internal_error', message: error instanceof Error ? error.message : String(error) },
   };
   process.stdout.write(`${JSON.stringify(result)}\n`);

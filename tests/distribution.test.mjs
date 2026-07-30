@@ -198,3 +198,16 @@ test('Agent instructions cover selection, semantic Update, removal, and self-Upd
   assert.match(removal, /final target disappeared, delete that scope's Intent document/);
   assert.match(removal, /start a new Agent session/);
 });
+
+test('single-Skill Update contract preflights before direct mutation and closes every semantic branch', async () => {
+  const update = await readFile(join(skillRoot, 'references/update.md'), 'utf8');
+  assert.match(update, /intent-application\.mjs preflight[\s\S]*npx skills update <skill-name> --(?:project|global)/i);
+  assert.match(update, /No active Intent[\s\S]*do not capture[\s\S]*do not.*verify-fulfillment/i);
+  assert.match(update, /active Intent[\s\S]*upstream success[\s\S]*capture[\s\S]*apply[\s\S]*review[\s\S]*classif[\s\S]*close/i);
+  assert.match(update, /no_application_change[\s\S]*Baseline-satisfied Intent[\s\S]*remain active/i);
+  assert.match(update, /verify-fulfillment[\s\S]*only[\s\S]*Upstream-fulfilled[\s\S]*user confirmation/i);
+  assert.match(update, /verification fail[\s\S]*retain[\s\S]*warning[\s\S]*complete/i);
+  assert.match(update, /exit code zero[\s\S]*warnings[\s\S]*Unknown mutation outcome[\s\S]*new preflight[\s\S]*never automatically retry/i);
+  assert.match(update, /at most four ordinary `npx skills` invocations/i);
+  assert.doesNotMatch(update, /intent-application\.mjs update|run.*npx skills update/i);
+});

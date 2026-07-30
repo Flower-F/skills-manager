@@ -26,16 +26,147 @@ async function fakeNpx(root) {
   await mkdir(root, { recursive: true });
   await writeFile(executable, `#!/usr/bin/env node
 import { appendFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 await appendFile(process.env.FAKE_CALLS, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }) + '\\n');
 const args = process.argv.slice(2);
-if (args[0] !== 'skills' || args[1] !== 'list') process.exit(91);
+if (args[0] !== 'skills') process.exit(91);
+if (args[1] === 'update') {
+  if (process.env.FAKE_UPDATE_FAIL === '1') process.exit(13);
+  if (process.env.FAKE_UPDATE_WARNING) process.stderr.write(process.env.FAKE_UPDATE_WARNING);
+  process.exit(0);
+}
+if (args[1] === 'add') {
+  if (process.env.FAKE_ADD_FAIL === '1') process.exit(12);
+  const skill = args[args.indexOf('--skill') + 1];
+  const target = join(process.cwd(), '.agents', 'skills', skill);
+  const { mkdir, writeFile } = await import('node:fs/promises');
+  for (const [name, content] of Object.entries(JSON.parse(process.env.FAKE_CLEAN_FILES || '{}'))) {
+    const path = join(target, name);
+    await mkdir(dirname(path), { recursive: true });
+    await writeFile(path, content);
+  }
+  process.exit(0);
+}
+if (args[1] !== 'list') process.exit(92);
 const global = args.includes('--global');
-const payload = global ? (process.env.FAKE_GLOBAL_LIST || '[]') : (process.env.FAKE_PROJECT_LIST || '[]');
-process.stdout.write(payload);
+if ((global && process.env.FAKE_GLOBAL_FAIL === '1') || (!global && process.env.FAKE_PROJECT_FAIL === '1')) process.exit(11);
+const temporary = process.cwd().includes('skills-manager-fulfillment-');
+const cleanSkill = process.env.FAKE_CLEAN_SKILL || 'alpha';
+const cleanSource = process.env.FAKE_CLEAN_SOURCE || 'acme/skills';
+const cleanEntry = [{ name: cleanSkill, path: join(process.cwd(), '.agents', 'skills', cleanSkill), scope: 'project', agents: ['Universal'], source: cleanSource, sourceUrl: 'https://github.com/' + cleanSource + '.git', sourceType: 'github' }];
+const payload = temporary ? JSON.stringify(cleanEntry) : global ? (process.env.FAKE_GLOBAL_LIST || '[]') : (process.env.FAKE_PROJECT_LIST || '[]');
+process.stdout.write((global && process.env.FAKE_GLOBAL_MALFORMED === '1') || (!global && process.env.FAKE_PROJECT_MALFORMED === '1') ? '{' : payload);
 `);
   await chmod(executable, 0o755);
   return { executable, calls };
 }
+
+test('Update preflight inspects both scopes and returns the exact active Intent state without mutation', async () => {
+  const root = await temp('skills-manager-preflight-active-');
+  const project = join(root, 'project');
+  const installed = join(project, 'alpha');
+  await write(join(installed, 'SKILL.md'), '---\nname: alpha\n---\n');
+  await write(join(project, '.skills-manager/intents/acme-2Fskills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Preserve one outcome.\n- Preserve another outcome\n  with detail.\n');
+  const fake = await fakeNpx(join(root, 'fake'));
+  const result = await run(['preflight', '--name', 'alpha'], { cwd: project, fake, env: { FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]) } });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.json.status, 'complete');
+  assert.equal(result.json.operation, 'preflight');
+  assert.deepEqual(result.json.installation, { name: 'alpha', source: 'acme/skills', scope: 'project', path: resolve(installed), agents: ['Codex'] });
+  assert.deepEqual(result.json.intent, { status: 'active', outcomes: ['Preserve one outcome.', 'Preserve another outcome\nwith detail.'] });
+  const observed = (await readFile(fake.calls, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(observed.map(({ argv }) => argv), [['skills', 'list', '--json'], ['skills', 'list', '--json', '--global']]);
+});
+
+test('Update preflight returns an absent Intent state and resolves explicit cross-scope selection', async () => {
+  const root = await temp('skills-manager-preflight-scope-');
+  const project = join(root, 'project');
+  const projectInstalled = join(project, 'alpha');
+  const globalInstalled = join(root, 'home/alpha');
+  await write(join(projectInstalled, 'SKILL.md'), 'project\n');
+  await write(join(globalInstalled, 'SKILL.md'), 'global\n');
+  const fake = await fakeNpx(join(root, 'fake'));
+  const env = {
+    XDG_CONFIG_HOME: join(root, 'home/.config'),
+    FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', projectInstalled)]),
+    FAKE_GLOBAL_LIST: JSON.stringify([installation('alpha', globalInstalled, 'global')]),
+  };
+  const ambiguous = await run(['preflight', '--name', 'alpha'], { cwd: project, fake, env });
+  assert.equal(ambiguous.exitCode, 1);
+  assert.equal(ambiguous.json.error.code, 'scope_ambiguous');
+  const selected = await run(['preflight', '--name', 'alpha', '--scope', 'global'], { cwd: project, fake, env });
+  assert.equal(selected.exitCode, 0, selected.stderr);
+  assert.equal(selected.json.installation.scope, 'global');
+  assert.deepEqual(selected.json.intent, { status: 'absent', outcomes: [] });
+});
+
+test('Update preflight rejects incomplete scope inspection, malformed identity, and malformed matching Intent state', async (t) => {
+  const root = await temp('skills-manager-preflight-failure-');
+  const project = join(root, 'project');
+  const installed = join(project, 'alpha');
+  await write(join(installed, 'SKILL.md'), 'installed\n');
+  const fake = await fakeNpx(join(root, 'fake'));
+  const baseEnv = { FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]) };
+  const cases = [
+    ['project list failure', { ...baseEnv, FAKE_PROJECT_FAIL: '1' }, 'listing_failed'],
+    ['global list failure', { ...baseEnv, FAKE_GLOBAL_FAIL: '1' }, 'listing_failed'],
+    ['malformed project JSON', { ...baseEnv, FAKE_PROJECT_MALFORMED: '1' }, 'malformed_listing'],
+    ['malformed required field', { FAKE_PROJECT_LIST: JSON.stringify([{ ...installation('alpha', installed), agents: [] }]) }, 'malformed_listing'],
+    ['empty normalized source', { FAKE_PROJECT_LIST: JSON.stringify([{ ...installation('alpha', installed), source: '.git', sourceUrl: '.git' }]) }, 'malformed_listing'],
+  ];
+  for (const [label, env, code] of cases) await t.test(label, async () => {
+    const result = await run(['preflight', '--name', 'alpha'], { cwd: project, fake, env });
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.json.error.code, code);
+  });
+  const document = join(project, '.skills-manager/intents/acme-2Fskills--alpha.md');
+  const invalidDocuments = [
+    ['wrong source', '---\nsource: other/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Outcome.\n'],
+    ['wrong skill', '---\nsource: acme/skills\nskill: beta\nscope: project\n---\n\n# Active Intents\n\n- Outcome.\n'],
+    ['wrong scope', '---\nsource: acme/skills\nskill: alpha\nscope: global\n---\n\n# Active Intents\n\n- Outcome.\n'],
+    ['empty outcomes', '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n'],
+    ['unsupported shape', '---\nsource: acme/skills\nskill: alpha\nscope: project\nhistory: no\n---\n\n# Active Intents\n\n- Outcome.\n'],
+  ];
+  for (const [label, content] of invalidDocuments) await t.test(label, async () => {
+    await write(document, content);
+    const result = await run(['preflight', '--name', 'alpha'], { cwd: project, fake, env: baseEnv });
+    assert.equal(result.exitCode, 1);
+    assert.match(result.json.error.code, /invalid_intent|intent_identity_mismatch/);
+    const observed = (await readFile(fake.calls, 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(observed.some(({ argv }) => ['update', 'add'].includes(argv[1])), false);
+  });
+});
+
+test('clean upstream is acquired only for explicit upstream-fulfillment verification and temporary content is cleaned', async () => {
+  const fixture = await captureFixture();
+  const ordinaryCalls = (await readFile(fixture.fake.calls, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(ordinaryCalls.some(({ argv }) => argv[1] === 'add'), false);
+  const verification = await run(['verify-fulfillment', ...fixture.args], { cwd: fixture.project, fake: fixture.fake, env: { ...fixture.env, FAKE_CLEAN_FILES: JSON.stringify({ 'SKILL.md': '---\nname: alpha\n---\n\nClean.\n' }) } });
+  assert.equal(verification.exitCode, 0, verification.stderr);
+  assert.equal(verification.json.status, 'verification_ready');
+  assert.deepEqual(verification.json.changedPaths, ['SKILL.md']);
+  assert.match(verification.json.patch, /--- clean-upstream\/SKILL\.md/);
+  assert.doesNotMatch(verification.json.patch, /baseline\/SKILL\.md/);
+  assert.match(verification.json.patch, /Clean\./);
+  const observed = (await readFile(fixture.fake.calls, 'utf8')).trim().split('\n').map(JSON.parse);
+  const add = observed.find(({ argv }) => argv[1] === 'add');
+  assert.deepEqual(add.argv, ['skills', 'add', 'acme/skills', '--skill', 'alpha', '--agent', 'universal', '--copy', '--yes']);
+  assert.equal(observed.filter(({ argv }) => argv[1] === 'add').length, 1);
+  await assert.rejects(lstat(add.cwd), { code: 'ENOENT' });
+  await rm(fixture.result.json.handle.path, { recursive: true });
+});
+
+test('failed optional upstream-fulfillment verification is bounded to a warning-compatible machine failure and cleans up', async () => {
+  const fixture = await captureFixture();
+  const verification = await run(['verify-fulfillment', ...fixture.args], { cwd: fixture.project, fake: fixture.fake, env: { ...fixture.env, FAKE_ADD_FAIL: '1' } });
+  assert.equal(verification.exitCode, 1);
+  assert.equal(verification.json.status, 'failed');
+  assert.equal(verification.json.error.code, 'clean_acquisition_failed');
+  const observed = (await readFile(fixture.fake.calls, 'utf8')).trim().split('\n').map(JSON.parse);
+  const add = observed.find(({ argv }) => argv[1] === 'add');
+  await assert.rejects(lstat(add.cwd), { code: 'ENOENT' });
+  await rm(fixture.result.json.handle.path, { recursive: true });
+});
 
 async function run(args, { cwd, fake, env = {} }) {
   const child = spawn(process.execPath, [helper, ...args], {
@@ -53,6 +184,19 @@ async function run(args, { cwd, fake, env = {} }) {
   return { exitCode, stdout, stderr, json: stdout ? JSON.parse(stdout) : null };
 }
 
+async function runDirectUpdate(name, scope, { cwd, fake, env = {} }) {
+  const child = spawn(fake.executable, ['skills', 'update', name, `--${scope}`], {
+    cwd,
+    env: { ...process.env, FAKE_CALLS: fake.calls, ...env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  let stderr = '';
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk) => (stderr += chunk));
+  const exitCode = await new Promise((done) => child.on('close', done));
+  return { exitCode, stderr };
+}
+
 function identityArgs({ name = 'alpha', source = 'acme/skills', scope = 'project', path }) {
   return ['--name', name, '--source', source, '--scope', scope, '--path', path];
 }
@@ -60,6 +204,60 @@ function identityArgs({ name = 'alpha', source = 'acme/skills', scope = 'project
 function handleArgs(capture) {
   return ['--handle', capture.json.handle.path, '--marker', capture.json.handle.marker];
 }
+
+test('single-Skill Update uses three ordinary upstream calls without Intents and four with active Intents', async (t) => {
+  for (const active of [false, true]) await t.test(active ? 'active Intent' : 'no Intent', async () => {
+    const root = await temp(`skills-manager-update-count-${active ? 'active' : 'plain'}-`);
+    const project = join(root, 'project');
+    const installed = join(project, 'alpha');
+    await write(join(installed, 'SKILL.md'), '---\nname: alpha\n---\n');
+    if (active) await write(join(project, '.skills-manager/intents/acme-2Fskills--alpha.md'), '---\nsource: acme/skills\nskill: alpha\nscope: project\n---\n\n# Active Intents\n\n- Preserve the approved outcome.\n');
+    const fake = await fakeNpx(join(root, 'fake'));
+    const env = { FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]) };
+    const preflight = await run(['preflight', '--name', 'alpha'], { cwd: project, fake, env });
+    assert.equal(preflight.exitCode, 0, preflight.stderr);
+    const update = await runDirectUpdate('alpha', 'project', { cwd: project, fake, env: { ...env, FAKE_UPDATE_WARNING: 'upstream warning\n' } });
+    assert.equal(update.exitCode, 0);
+    assert.match(update.stderr, /upstream warning/);
+    if (active) {
+      const identity = preflight.json.installation;
+      const captured = await run(['capture', ...identityArgs(identity)], { cwd: project, fake, env });
+      assert.equal(captured.exitCode, 0, captured.stderr);
+      await write(join(installed, 'SKILL.md'), '---\nname: alpha\n---\n\nApproved outcome applied.\n');
+      const review = await run(['review', ...identityArgs(identity), ...handleArgs(captured)], { cwd: project, fake, env });
+      assert.equal(review.exitCode, 0, review.stderr);
+      assert.equal(review.json.status, 'review_required');
+      assert.deepEqual(review.json.changedPaths, ['SKILL.md']);
+      const close = await run(['close', ...identityArgs(identity), ...handleArgs(captured), '--outcome', 'complete'], { cwd: project, fake, env });
+      assert.equal(close.exitCode, 0, close.stderr);
+      await assert.rejects(lstat(captured.json.handle.path), { code: 'ENOENT' });
+    }
+    const observed = (await readFile(fake.calls, 'utf8')).trim().split('\n').map(JSON.parse);
+    assert.equal(observed.length, active ? 4 : 3);
+    assert.deepEqual(observed.map(({ argv }) => argv[1]), active ? ['list', 'list', 'update', 'list'] : ['list', 'list', 'update']);
+    assert.equal(observed.some(({ argv }) => argv[1] === 'add'), false);
+  });
+});
+
+test('failed direct mutation stops the attempt and recovery begins with a new preflight rather than automatic replay', async () => {
+  const root = await temp('skills-manager-update-failure-');
+  const project = join(root, 'project');
+  const installed = join(project, 'alpha');
+  await write(join(installed, 'SKILL.md'), '---\nname: alpha\n---\n');
+  const fake = await fakeNpx(join(root, 'fake'));
+  const env = { FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]) };
+  const firstPreflight = await run(['preflight', '--name', 'alpha'], { cwd: project, fake, env });
+  assert.equal(firstPreflight.exitCode, 0);
+  const failed = await runDirectUpdate('alpha', 'project', { cwd: project, fake, env: { ...env, FAKE_UPDATE_FAIL: '1' } });
+  assert.equal(failed.exitCode, 13);
+  let observed = (await readFile(fake.calls, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(observed.map(({ argv }) => argv[1]), ['list', 'list', 'update']);
+  const recoveryPreflight = await run(['preflight', '--name', 'alpha'], { cwd: project, fake, env });
+  assert.equal(recoveryPreflight.exitCode, 0);
+  observed = (await readFile(fake.calls, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(observed.map(({ argv }) => argv[1]), ['list', 'list', 'update', 'list', 'list']);
+  assert.equal(observed.filter(({ argv }) => argv[1] === 'update').length, 1);
+});
 
 async function captureFixture(scope = 'project') {
   const root = await temp(`skills-manager-${scope}-capture-`);
@@ -109,7 +307,7 @@ test('capture rejects identity, source, scope, and installed-path mismatches wit
     assert.equal(result.exitCode, 1);
     assert.equal(result.json.status, 'failed');
     assert.deepEqual(result.json.installation, { name: 'alpha', source: 'acme/skills', scope: 'project', path: resolve(installed) });
-    assert.match(result.json.error.code, /identity_mismatch|installation_not_found/);
+    assert.match(result.json.error.code, /identity_mismatch|installation_not_found|malformed_listing/);
   });
 });
 
