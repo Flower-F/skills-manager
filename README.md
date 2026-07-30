@@ -2,6 +2,10 @@
   <img src="./assets/readme/hero.svg" width="100%" alt="Skills Manager preserves a user-approved semantic Intent across upstream Agent Skill updates">
 </p>
 
+<p align="center">
+  <strong>English</strong> · <a href="./README.zh-CN.md">简体中文</a>
+</p>
+
 Skills Manager manages Agent Skills through `npx skills` and preserves the behavior you approved when upstream content changes.
 
 > [!IMPORTANT]
