@@ -40,9 +40,31 @@ An Installation Update is complete after upstream success plus classification of
 
 ## Multiple Installations
 
-1. The main Agent invokes one `npx skills update <skill...>` package operation for the full user-approved selection.
-2. Use public listing to separate no-Intent Installations, which complete immediately, from customized Installations.
-3. When concurrency is available, assign at most one subagent to each customized Installation. Give it only that Installation identity, path, and Intent document. Semantic subagents capture, edit, review, close, and return one per-Installation summary; package operations remain with the main Agent.
-4. Retain each successful Installation when another conflicts, fails, or is interrupted. Report partial success and name only incomplete Installations for user action or targeted retry.
+1. Before any coordinated mutation, run one batch preflight for the full user-approved selection. Each entry contains `name` and optional `scope`; batch input is bounded to 256 Installations and 1 MiB:
+
+   ```sh
+   node <skill-directory>/scripts/intent-application.mjs preflight --installations '<selection-json>'
+   ```
+
+   Batch preflight performs one project listing and one global listing, validates every selected identity and exact Intent document, and returns deterministic per-Installation results. It completes before the upstream command. Continue only when the overall status is `complete`; a failed or ambiguous entry blocks the entire coordinated mutation.
+2. After complete preflight and approval, the main Agent invokes one `npx skills update <skill...>` direct package operation for the full selection. No helper wraps this upstream mutation.
+3. Separate no-Intent Installations, which complete after upstream success, from customized Installations. Group customized identities by scope and capture each group once:
+
+   ```sh
+   node <skill-directory>/scripts/intent-application.mjs capture \
+     --scope <project|global> --installations '<identity-json>'
+   ```
+
+   Each invocation performs one selected-scope listing regardless of requested Skill count. Batch capture returns overall `complete`, `partial`, or `failed` plus deterministic per-Installation outcomes. Every success has an independent Baseline handle; one failed capture never deletes or invalidates another handle.
+4. When concurrency is available, assign at most one subagent to each customized Installation with a successful capture. Give it only that Installation identity, path, Intent document, and independent Baseline handle. Semantic subagents edit, review, close, and return one per-Installation conclusion; package operations remain with the main Agent. Retain partial success when another Installation conflicts, fails, or is interrupted.
+5. Only when proposing one or more Intents as Upstream-fulfilled, request shared optional verification across those Installations:
+
+   ```sh
+   node <skill-directory>/scripts/intent-application.mjs verify-fulfillment \
+     --installations '<identity-json>'
+   ```
+
+   The helper groups normalized source identities and performs one clean acquisition per source, using all requested `--skill` selections supported by the public interface. Aggregate patch and changed-path metadata budgets keep batch output bounded; an evidence overflow becomes an Installation-local warning that retains its Intent and requires a smaller targeted verification. Evidence and Baseline-satisfied, Upstream-fulfilled, warning, incomplete, or conflicting conclusions remain independent per Installation. A source-group verification warning retains every affected Intent and does not roll back unrelated completed Installations.
+6. Report every completed Installation and name only incomplete Installations for user action or targeted retry. Close every successful handle through its own terminal outcome.
 
 A batch Update is complete when every Installation is either complete by its own criterion or explicitly reported as incomplete. Recovery reruns only affected Installations; successful work stays in place.

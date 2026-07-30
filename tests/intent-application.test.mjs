@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { chmod, lstat, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { spawn } from 'node:child_process';
 import test from 'node:test';
 
@@ -44,24 +44,35 @@ if (args[1] === 'update') {
   process.exit(0);
 }
 if (args[1] === 'add') {
-  if (process.env.FAKE_ADD_FAIL === '1') process.exit(12);
-  const skill = args[args.indexOf('--skill') + 1];
-  const target = join(process.cwd(), '.agents', 'skills', skill);
+  if (process.env.FAKE_ADD_FAIL === '1' || process.env.FAKE_ADD_FAIL_SOURCE === args[2]) process.exit(12);
+  const skills = args.flatMap((arg, index) => arg === '--skill' ? [args[index + 1]] : []);
   const { mkdir, writeFile } = await import('node:fs/promises');
-  for (const [name, content] of Object.entries(JSON.parse(process.env.FAKE_CLEAN_FILES || '{}'))) {
-    const path = join(target, name);
-    await mkdir(dirname(path), { recursive: true });
-    await writeFile(path, content);
+  const filesBySkill = JSON.parse(process.env.FAKE_CLEAN_FILES_BY_SKILL || '{}');
+  for (const skill of skills) {
+    const target = join(process.cwd(), '.agents', 'skills', skill);
+    const files = filesBySkill[skill] || JSON.parse(process.env.FAKE_CLEAN_FILES || '{}');
+    for (const [name, content] of Object.entries(files)) {
+      const path = join(target, name);
+      await mkdir(dirname(path), { recursive: true });
+      await writeFile(path, content);
+    }
   }
+  await writeFile(join(process.cwd(), '.fake-skills.json'), JSON.stringify(skills));
+  await writeFile(join(process.cwd(), '.fake-source'), args[2]);
   process.exit(0);
 }
 if (args[1] !== 'list') process.exit(92);
 const global = args.includes('--global');
 if ((global && process.env.FAKE_GLOBAL_FAIL === '1') || (!global && process.env.FAKE_PROJECT_FAIL === '1')) process.exit(11);
 const temporary = process.cwd().includes('skills-manager-fulfillment-');
-const cleanSkill = process.env.FAKE_CLEAN_SKILL || 'alpha';
-const cleanSource = process.env.FAKE_CLEAN_SOURCE || 'acme/skills';
-const cleanEntry = [{ name: cleanSkill, path: join(process.cwd(), '.agents', 'skills', cleanSkill), scope: 'project', agents: ['Universal'], source: cleanSource, sourceUrl: 'https://github.com/' + cleanSource + '.git', sourceType: 'github' }];
+let cleanSource = process.env.FAKE_CLEAN_SOURCE || 'acme/skills';
+let cleanSkills = [process.env.FAKE_CLEAN_SKILL || 'alpha'];
+if (temporary) {
+  const { readFile } = await import('node:fs/promises');
+  cleanSkills = JSON.parse(await readFile(join(process.cwd(), '.fake-skills.json'), 'utf8'));
+  cleanSource = process.env.FAKE_CLEAN_SOURCE || await readFile(join(process.cwd(), '.fake-source'), 'utf8');
+}
+const cleanEntry = cleanSkills.map((skill) => ({ name: skill, path: join(process.cwd(), '.agents', 'skills', skill), scope: 'project', agents: ['Universal'], source: cleanSource, sourceUrl: 'https://github.com/' + cleanSource + '.git', sourceType: 'github' }));
 const payload = temporary ? JSON.stringify(cleanEntry) : global ? (process.env.FAKE_GLOBAL_LIST || '[]') : (process.env.FAKE_PROJECT_LIST || '[]');
 process.stdout.write((global && process.env.FAKE_GLOBAL_MALFORMED === '1') || (!global && process.env.FAKE_PROJECT_MALFORMED === '1') ? '{' : payload);
 `);
@@ -145,6 +156,41 @@ test('Update preflight rejects incomplete scope inspection, malformed identity, 
   });
 });
 
+test('batch preflight resolves every selected Installation with one listing per scope before mutation', async () => {
+  const root = await temp('skills-manager-batch-preflight-');
+  const project = join(root, 'project');
+  const alpha = join(project, 'alpha');
+  const beta = join(root, 'home/beta');
+  await write(join(alpha, 'SKILL.md'), '---\nname: alpha\n---\n');
+  await write(join(beta, 'SKILL.md'), '---\nname: beta\n---\n');
+  const fake = await fakeNpx(join(root, 'fake'));
+  const env = {
+    FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', alpha)]),
+    FAKE_GLOBAL_LIST: JSON.stringify([installation('beta', beta, 'global', 'other/skills')]),
+  };
+  const selected = JSON.stringify([{ name: 'beta', scope: 'global' }, { name: 'alpha', scope: 'project' }]);
+  const result = await run(['preflight', '--installations', selected], { cwd: project, fake, env });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.json.status, 'complete');
+  assert.deepEqual(result.json.results.map(({ installation }) => [installation.name, installation.scope]), [['beta', 'global'], ['alpha', 'project']]);
+  const calls = (await readFile(fake.calls, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(calls.map(({ argv }) => argv), [['skills', 'list', '--json'], ['skills', 'list', '--json', '--global']]);
+
+  const ambiguousEnv = { ...env, FAKE_GLOBAL_LIST: JSON.stringify([installation('alpha', join(root, 'home/alpha'), 'global'), installation('beta', beta, 'global', 'other/skills')]) };
+  await write(join(root, 'home/alpha/SKILL.md'), '---\nname: alpha\n---\n');
+  const blocked = await run(['preflight', '--installations', JSON.stringify([{ name: 'alpha' }, { name: 'beta', scope: 'global' }])], { cwd: project, fake, env: ambiguousEnv });
+  assert.equal(blocked.exitCode, 1);
+  assert.equal(blocked.json.status, 'failed');
+  assert.deepEqual(blocked.json.results.map(({ status }) => status), ['failed', 'complete']);
+  const allCalls = (await readFile(fake.calls, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(allCalls.some(({ argv }) => ['add', 'update', 'remove'].includes(argv[1])), false);
+
+  const duplicate = await run(['preflight', '--installations', JSON.stringify([{ name: 'alpha' }, { scope: 'project', name: 'alpha' }])], { cwd: project, fake, env });
+  assert.equal(duplicate.exitCode, 1);
+  assert.equal(duplicate.json.status, 'failed');
+  assert.deepEqual(duplicate.json.results.map(({ error }) => error.code), ['duplicate_installation', 'duplicate_installation']);
+});
+
 test('clean upstream is acquired only for explicit upstream-fulfillment verification and temporary content is cleaned', async () => {
   const fixture = await captureFixture();
   const ordinaryCalls = (await readFile(fixture.fake.calls, 'utf8')).trim().split('\n').map(JSON.parse);
@@ -174,6 +220,137 @@ test('failed optional upstream-fulfillment verification is bounded to a warning-
   const add = observed.find(({ argv }) => argv[1] === 'add');
   await assert.rejects(lstat(add.cwd), { code: 'ENOENT' });
   await rm(fixture.result.json.handle.path, { recursive: true });
+});
+
+test('batch fulfillment verification acquires once per source and keeps per-Installation outcomes independent', async () => {
+  const root = await temp('skills-manager-batch-fulfillment-');
+  const project = join(root, 'project');
+  const installed = {
+    alpha: join(project, 'alpha'),
+    beta: join(project, 'beta'),
+    gamma: join(project, 'gamma'),
+  };
+  for (const name of Object.keys(installed)) await write(join(installed[name], 'SKILL.md'), `---\nname: ${name}\n---\n\nInstalled ${name}.\n`);
+  const fake = await fakeNpx(join(root, 'fake'));
+  const input = JSON.stringify([
+    { name: 'gamma', source: 'other/skills', scope: 'project', path: installed.gamma },
+    { name: 'beta', source: 'acme/skills', scope: 'project', path: installed.beta },
+    { name: 'alpha', source: 'https://github.com/acme/skills.git', scope: 'project', path: installed.alpha },
+  ]);
+  const env = {
+    FAKE_ADD_FAIL_SOURCE: 'other/skills',
+    FAKE_CLEAN_FILES_BY_SKILL: JSON.stringify({
+      alpha: { 'SKILL.md': '---\nname: alpha\n---\n\nClean alpha.\n' },
+      beta: { 'SKILL.md': '---\nname: beta\n---\n\nClean beta.\n' },
+    }),
+  };
+  const result = await run(['verify-fulfillment', '--installations', input], { cwd: project, fake, env });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.json.status, 'partial');
+  assert.deepEqual(result.json.results.map(({ installation, status }) => [installation.name, status]), [['alpha', 'verification_ready'], ['beta', 'verification_ready'], ['gamma', 'warning']]);
+  assert.equal(result.json.results[2].intent, 'retained');
+  const calls = (await readFile(fake.calls, 'utf8')).trim().split('\n').map(JSON.parse);
+  const additions = calls.filter(({ argv }) => argv[1] === 'add');
+  assert.equal(additions.length, 2);
+  assert.deepEqual(additions[0].argv, ['skills', 'add', 'acme/skills', '--skill', 'alpha', '--skill', 'beta', '--agent', 'universal', '--copy', '--yes']);
+  assert.deepEqual(additions[1].argv.slice(0, 5), ['skills', 'add', 'other/skills', '--skill', 'gamma']);
+  for (const { cwd } of additions) await assert.rejects(lstat(cwd), { code: 'ENOENT' });
+});
+
+test('batch verification shares one total patch budget and targets overflow paths', async () => {
+  const root = await temp('skills-manager-batch-patch-bound-');
+  const project = join(root, 'project');
+  const alpha = join(project, 'alpha');
+  const beta = join(project, 'beta');
+  await write(join(alpha, 'SKILL.md'), '---\nname: alpha\n---\n\nInstalled alpha content.\n');
+  await write(join(beta, 'SKILL.md'), '---\nname: beta\n---\n\nInstalled beta content.\n');
+  const fake = await fakeNpx(join(root, 'fake'));
+  const input = JSON.stringify([
+    { name: 'alpha', source: 'acme/skills', scope: 'project', path: alpha },
+    { name: 'beta', source: 'acme/skills', scope: 'project', path: beta },
+  ]);
+  const result = await run(['verify-fulfillment', '--installations', input], {
+    cwd: project,
+    fake,
+    env: {
+      NODE_ENV: 'test',
+      SKILLS_MANAGER_PATCH_LIMIT_BYTES: '350',
+      FAKE_CLEAN_FILES_BY_SKILL: JSON.stringify({
+        alpha: { 'SKILL.md': '---\nname: alpha\n---\n\nClean alpha content.\n' },
+        beta: { 'SKILL.md': '---\nname: beta\n---\n\nClean beta content.\n' },
+      }),
+    },
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.json.status, 'partial');
+  assert.ok(Buffer.byteLength(result.json.results.map(({ patch = '' }) => patch).join('')) <= 350);
+  assert.ok(result.json.results.some(({ status, targetedReviewPaths }) => status === 'targeted_review_required' && targetedReviewPaths.length > 0));
+});
+
+test('failed batch evidence does not consume patch budget from a later Installation', async () => {
+  const root = await temp('skills-manager-batch-failed-evidence-budget-');
+  const project = join(root, 'project');
+  const alpha = join(project, 'alpha');
+  const beta = join(project, 'beta');
+  await write(join(alpha, 'SKILL.md'), '---\nname: alpha\n---\n\nInstalled alpha content.\n');
+  await symlink('../../outside', join(alpha, 'zz-escape'));
+  await write(join(beta, 'SKILL.md'), '---\nname: beta\n---\n\nInstalled beta content.\n');
+  const fake = await fakeNpx(join(root, 'fake'));
+  const input = JSON.stringify([
+    { name: 'alpha', source: 'acme/skills', scope: 'project', path: alpha },
+    { name: 'beta', source: 'acme/skills', scope: 'project', path: beta },
+  ]);
+  const result = await run(['verify-fulfillment', '--installations', input], {
+    cwd: project,
+    fake,
+    env: {
+      NODE_ENV: 'test',
+      SKILLS_MANAGER_PATCH_LIMIT_BYTES: '350',
+      FAKE_CLEAN_FILES_BY_SKILL: JSON.stringify({
+        alpha: { 'SKILL.md': '---\nname: alpha\n---\n\nClean alpha content.\n' },
+        beta: { 'SKILL.md': '---\nname: beta\n---\n\nClean beta content.\n' },
+      }),
+    },
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.json.status, 'partial');
+  assert.deepEqual(result.json.results.map(({ installation, status }) => [installation.name, status]), [['alpha', 'warning'], ['beta', 'verification_ready']]);
+  assert.equal(result.json.results[0].error.code, 'escaping_symlink');
+  assert.ok(result.json.results[1].patch.length > 0);
+  assert.deepEqual(result.json.results[1].targetedReviewPaths, []);
+});
+
+test('batch evidence overflow stays bounded and does not consume an unrelated Installation result', async () => {
+  const root = await temp('skills-manager-batch-evidence-bound-');
+  const project = join(root, 'project');
+  const alpha = join(project, 'alpha');
+  const beta = join(project, 'beta');
+  await write(join(alpha, 'SKILL.md'), '---\nname: alpha\n---\n\nInstalled alpha.\n');
+  await write(join(beta, 'SKILL.md'), '---\nname: beta\n---\n\nInstalled beta.\n');
+  for (let index = 0; index < 30; index += 1) await write(join(alpha, `path-${index}.txt`), `${index}\n`);
+  const fake = await fakeNpx(join(root, 'fake'));
+  const input = JSON.stringify([
+    { name: 'alpha', source: 'acme/skills', scope: 'project', path: alpha },
+    { name: 'beta', source: 'acme/skills', scope: 'project', path: beta },
+  ]);
+  const result = await run(['verify-fulfillment', '--installations', input], {
+    cwd: project,
+    fake,
+    env: {
+      NODE_ENV: 'test',
+      SKILLS_MANAGER_EVIDENCE_LIMIT_BYTES: '1200',
+      FAKE_CLEAN_FILES_BY_SKILL: JSON.stringify({
+        alpha: { 'SKILL.md': '---\nname: alpha\n---\n\nClean alpha.\n' },
+        beta: { 'SKILL.md': '---\nname: beta\n---\n\nClean beta.\n' },
+      }),
+    },
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.json.status, 'partial');
+  assert.deepEqual(result.json.results.map(({ installation, status }) => [installation.name, status]), [['alpha', 'warning'], ['beta', 'verification_ready']]);
+  assert.equal(result.json.results[0].error.code, 'evidence_output_overflow');
+  assert.equal(result.json.results[0].intent, 'retained');
+  assert.ok(Buffer.byteLength(result.stdout) < 16 * 1024);
 });
 
 async function run(args, { cwd, fake, env = {} }) {
@@ -280,6 +457,77 @@ async function captureFixture(scope = 'project') {
   const result = await run(['capture', ...args], { cwd: project, fake, env });
   return { root, project, installed, fake, env, args, result };
 }
+
+test('batch capture uses one scope listing and preserves independent handles through partial failure', async () => {
+  const root = await temp('skills-manager-batch-capture-');
+  const project = join(root, 'project');
+  const alpha = join(project, 'alpha');
+  const beta = join(project, 'beta');
+  const gamma = join(project, 'gamma');
+  await write(join(alpha, 'SKILL.md'), '---\nname: alpha\n---\n\nAlpha.\n');
+  await write(join(beta, 'SKILL.md'), '---\nname: wrong\n---\n');
+  await write(join(gamma, 'SKILL.md'), '---\nname: gamma\n---\n\nGamma.\n');
+  const fake = await fakeNpx(join(root, 'fake'));
+  const env = { FAKE_PROJECT_LIST: JSON.stringify([installation('gamma', gamma), installation('beta', beta), installation('alpha', alpha)]) };
+  const requested = JSON.stringify([
+    { name: 'gamma', source: 'acme/skills', path: gamma },
+    { name: 'beta', source: 'acme/skills', path: beta },
+    { name: 'alpha', source: 'acme/skills', path: alpha },
+  ]);
+  const result = await run(['capture', '--scope', 'project', '--installations', requested], { cwd: project, fake, env });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.json.status, 'partial');
+  assert.deepEqual(result.json.results.map(({ installation, status }) => [installation.name, status]), [['alpha', 'complete'], ['beta', 'failed'], ['gamma', 'complete']]);
+  const calls = (await readFile(fake.calls, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.deepEqual(calls.map(({ argv }) => argv), [['skills', 'list', '--json']]);
+
+  for (const name of ['alpha', 'gamma']) {
+    const captured = result.json.results.find(({ installation }) => installation.name === name);
+    await write(join(project, name, 'changed.md'), `${name}\n`);
+    const args = identityArgs({ name, path: join(project, name) });
+    const review = await run(['review', ...args, ...handleArgs({ json: captured })], { cwd: project, fake, env });
+    assert.equal(review.exitCode, 0, review.stderr);
+    assert.ok(review.json.changedPaths.includes('changed.md'));
+    const close = await run(['close', ...args, ...handleArgs({ json: captured }), '--outcome', 'complete'], { cwd: project, fake, env });
+    assert.equal(close.exitCode, 0, close.stderr);
+  }
+
+  const complete = await run(['capture', '--scope', 'project', '--installations', JSON.stringify([
+    { name: 'gamma', source: 'acme/skills', path: gamma },
+    { name: 'alpha', source: 'acme/skills', path: alpha },
+  ])], { cwd: project, fake, env });
+  assert.equal(complete.exitCode, 0, complete.stderr);
+  assert.equal(complete.json.status, 'complete');
+  for (const captured of complete.json.results) await rm(captured.handle.path, { recursive: true });
+
+  const failed = await run(['capture', '--scope', 'project', '--installations', JSON.stringify([
+    { name: 'beta', source: 'acme/skills', path: beta },
+  ])], { cwd: project, fake, env });
+  assert.equal(failed.exitCode, 1);
+  assert.equal(failed.json.status, 'failed');
+  const allCalls = (await readFile(fake.calls, 'utf8')).trim().split('\n').map(JSON.parse);
+  assert.equal(allCalls.filter(({ argv }) => argv[1] === 'list').length, 3);
+
+  const aliases = await run(['capture', '--scope', 'project', '--installations', JSON.stringify([
+    { name: 'alpha', source: 'acme/skills', path: alpha },
+    { path: relative(project, alpha), source: 'https://github.com/acme/skills.git', name: 'alpha' },
+  ])], { cwd: project, fake, env });
+  assert.equal(aliases.exitCode, 1, JSON.stringify(aliases.json));
+  assert.equal(aliases.json.status, 'failed');
+  assert.deepEqual(aliases.json.results.map(({ error }) => error.code), ['duplicate_installation', 'duplicate_installation']);
+});
+
+test('batch input bounds fail with a small machine-readable result', async () => {
+  const root = await temp('skills-manager-batch-bound-');
+  const project = join(root, 'project');
+  await mkdir(project, { recursive: true });
+  const fake = await fakeNpx(join(root, 'fake'));
+  const input = JSON.stringify(Array.from({ length: 257 }, (_, index) => ({ name: `skill-${index}` })));
+  const result = await run(['preflight', '--installations', input], { cwd: project, fake });
+  assert.equal(result.exitCode, 2);
+  assert.equal(result.json.error.code, 'invalid_arguments');
+  assert.ok(Buffer.byteLength(result.stdout) < 16 * 1024);
+});
 
 test('project and global capture use one selected-scope listing and return a bound secure Baseline handle', async (t) => {
   for (const scope of ['project', 'global']) await t.test(scope, async () => {

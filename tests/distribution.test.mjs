@@ -240,3 +240,13 @@ test('distributed review contract publishes fixed resource bounds and targeted f
   assert.match(intents, /workflow-integrity[\s\S]*`SKILL\.md` is readable UTF-8[\s\S]*Skill identity[\s\S]*changed symlink[\s\S]*every changed path/i);
   assert.match(intents, /does not execute[\s\S]*judge Skill quality[\s\S]*validate untouched content[\s\S]*generic Skill validator/i);
 });
+
+test('batch Update contract shares preflight by scope and optional acquisition by source', async () => {
+  const update = await readFile(join(skillRoot, 'references/update.md'), 'utf8');
+  assert.match(update, /preflight --installations[\s\S]*before[\s\S]*npx skills update <skill\.\.\.>/i);
+  assert.match(update, /capture[\s\S]*--scope <project\|global> --installations[\s\S]*one selected-scope listing[\s\S]*complete`, `partial`, or `failed/i);
+  assert.match(update, /independent Baseline handle[\s\S]*review[\s\S]*close[\s\S]*partial success/i);
+  assert.match(update, /verify-fulfillment[\s\S]*--installations[\s\S]*normalized source[\s\S]*one clean acquisition per source/i);
+  assert.match(update, /Aggregate patch and changed-path metadata budgets[\s\S]*bounded[\s\S]*evidence overflow[\s\S]*Installation-local warning/i);
+  assert.match(update, /verification warning[\s\S]*retain[\s\S]*unrelated completed Installations/i);
+});

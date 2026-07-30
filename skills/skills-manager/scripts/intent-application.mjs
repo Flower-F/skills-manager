@@ -14,16 +14,19 @@ const BASELINE_DIRECTORY = 'baseline';
 const MAX_PATCH_BYTES = 2 * 1024 * 1024;
 const MAX_TEXT_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_DIFF_LINES = 100_000;
+const MAX_BATCH_INSTALLATIONS = 256;
+const MAX_BATCH_INPUT_BYTES = 1024 * 1024;
+const MAX_EVIDENCE_METADATA_BYTES = 2 * 1024 * 1024;
 const MAX_CHILD_STREAM_BYTES = 4 * 1024 * 1024;
 const LIST_TIMEOUT_MS = 30_000;
 const ACQUIRE_TIMEOUT_MS = 120_000;
 const INSTALLATION_OPTIONS = ['name', 'source', 'scope', 'path'];
 const OPERATION_SCHEMAS = Object.freeze({
-  preflight: { required: ['name'], optional: ['scope'] },
-  capture: { required: INSTALLATION_OPTIONS, optional: [] },
+  preflight: { required: [], optional: ['name', 'scope', 'installations'] },
+  capture: { required: [], optional: [...INSTALLATION_OPTIONS, 'installations'] },
   review: { required: [...INSTALLATION_OPTIONS, 'handle', 'marker'], optional: [] },
   close: { required: [...INSTALLATION_OPTIONS, 'handle', 'marker', 'outcome'], optional: [] },
-  'verify-fulfillment': { required: INSTALLATION_OPTIONS, optional: [] },
+  'verify-fulfillment': { required: [], optional: [...INSTALLATION_OPTIONS, 'installations'] },
 });
 
 class OperationError extends Error {
@@ -60,7 +63,51 @@ function parseArguments(argv) {
   }
   const allowed = new Set([...schema.required, ...schema.optional]);
   for (const key of Object.keys(options)) if (!allowed.has(key)) throw new OperationError('invalid_arguments', `Unsupported option --${key}.`, 2);
+  const batch = options.installations !== undefined;
+  if (batch) {
+    const shared = operation === 'capture' ? new Set(['scope']) : new Set();
+    for (const key of INSTALLATION_OPTIONS) if (options[key] !== undefined && !shared.has(key)) throw new OperationError('invalid_arguments', `--installations cannot be combined with --${key}.`, 2);
+  }
+  if (!batch && ['preflight', 'capture', 'verify-fulfillment'].includes(operation)) {
+    const required = operation === 'preflight' ? ['name'] : INSTALLATION_OPTIONS;
+    for (const key of required) if (!options[key]?.trim()) throw new OperationError('invalid_arguments', `Missing required option --${key}.`, 2);
+  }
+  if (batch && operation === 'capture' && !options.scope) throw new OperationError('invalid_arguments', 'Batch capture requires --scope.', 2);
   return { operation, options };
+}
+
+function parseBatchInput(value, requiredFields, shared = {}, optionalFields = []) {
+  if (Buffer.byteLength(value) > MAX_BATCH_INPUT_BYTES) throw new OperationError('invalid_arguments', 'Batch Installation input exceeds 1 MiB.', 2);
+  let input;
+  try {
+    input = JSON.parse(value);
+  } catch {
+    throw new OperationError('invalid_arguments', 'Batch Installation input is malformed JSON.', 2);
+  }
+  if (!Array.isArray(input) || input.length === 0 || input.length > MAX_BATCH_INSTALLATIONS) {
+    throw new OperationError('invalid_arguments', `Batch Installation input must contain 1 to ${MAX_BATCH_INSTALLATIONS} entries.`, 2);
+  }
+  const allowed = new Set([...requiredFields, ...optionalFields]);
+  const installations = input.map((item, index) => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) throw new OperationError('invalid_arguments', `Batch Installation ${index} is malformed.`, 2);
+    for (const key of requiredFields) if (typeof item[key] !== 'string' || !item[key].trim()) throw new OperationError('invalid_arguments', `Batch Installation ${index} is missing ${key}.`, 2);
+    for (const key of optionalFields) if (item[key] !== undefined && (typeof item[key] !== 'string' || !item[key].trim())) throw new OperationError('invalid_arguments', `Batch Installation ${index} has malformed ${key}.`, 2);
+    for (const key of Object.keys(item)) if (!allowed.has(key)) throw new OperationError('invalid_arguments', `Batch Installation ${index} contains unsupported field ${key}.`, 2);
+    return { ...item, ...shared };
+  });
+  const keys = installations.map((item) => JSON.stringify(item));
+  if (new Set(keys).size !== keys.length) throw new OperationError('invalid_arguments', 'Batch Installation input contains a duplicate identity.', 2);
+  return installations;
+}
+
+function compareInstallations(left, right) {
+  const leftKey = `${left.scope ?? ''}\0${left.name}\0${normalizeSource(left.source ?? '')}\0${left.path ?? ''}`;
+  const rightKey = `${right.scope ?? ''}\0${right.name}\0${normalizeSource(right.source ?? '')}\0${right.path ?? ''}`;
+  return leftKey < rightKey ? -1 : leftKey > rightKey ? 1 : 0;
+}
+
+function stableInstallations(installations) {
+  return [...installations].sort(compareInstallations);
 }
 
 function normalizeSource(source) {
@@ -106,6 +153,16 @@ function commandTimeout(args) {
     ? Number(process.env[acquisition ? 'SKILLS_MANAGER_ACQUIRE_TIMEOUT_MS' : 'SKILLS_MANAGER_LIST_TIMEOUT_MS'])
     : Number.NaN;
   return Number.isFinite(configured) && configured > 0 ? configured : acquisition ? ACQUIRE_TIMEOUT_MS : LIST_TIMEOUT_MS;
+}
+
+function patchLimitBytes() {
+  const configured = process.env.NODE_ENV === 'test' ? Number(process.env.SKILLS_MANAGER_PATCH_LIMIT_BYTES) : Number.NaN;
+  return Number.isFinite(configured) && configured > 0 ? configured : MAX_PATCH_BYTES;
+}
+
+function evidenceLimitBytes() {
+  const configured = process.env.NODE_ENV === 'test' ? Number(process.env.SKILLS_MANAGER_EVIDENCE_LIMIT_BYTES) : Number.NaN;
+  return Number.isFinite(configured) && configured > 0 ? configured : MAX_EVIDENCE_METADATA_BYTES;
 }
 
 async function runSkillsCommand(args, cwd = process.cwd()) {
@@ -236,9 +293,7 @@ async function readIntent(installation) {
   return { status: 'active', outcomes: parseIntentDocument(content, path, installation) };
 }
 
-async function preflight(options) {
-  const project = await runList('project');
-  const global = await runList('global');
+async function preflightSelection(options, project, global) {
   const matches = [...project, ...global].filter((entry) => entry.name === options.name);
   if (project.filter((entry) => entry.name === options.name).length > 1 || global.filter((entry) => entry.name === options.name).length > 1) {
     throw new OperationError('duplicate_installation', `Public listing returned duplicate ${options.name} Installations in one scope.`);
@@ -252,13 +307,90 @@ async function preflight(options) {
   const installation = { name: entry.name, source: publicSource(entry), scope: entry.scope, path: resolve(entry.path), agents: [...entry.agents] };
   await resolveDirectory(installation.path, 'installation_unavailable', 'The selected installed path is not an accessible directory.');
   const intent = await readIntent(installation);
-  return { version: VERSION, operation: 'preflight', status: 'complete', installation, intent };
+  return { installation, intent };
+}
+
+function machineError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  return { code: error instanceof OperationError ? error.code : 'internal_error', message: message.length > 4096 ? `${message.slice(0, 4096)}…` : message };
+}
+
+async function preflight(options) {
+  const requests = options.installations === undefined
+    ? null
+    : stableInstallations(parseBatchInput(options.installations, ['name'], {}, ['scope']));
+  let project;
+  let global;
+  try {
+    project = await runList('project');
+    global = await runList('global');
+  } catch (error) {
+    if (!requests) throw error;
+    return { version: VERSION, operation: 'preflight', status: 'failed', results: requests.map((request) => ({ request, status: 'failed', error: machineError(error) })) };
+  }
+  if (!requests) return { version: VERSION, operation: 'preflight', status: 'complete', ...await preflightSelection(options, project, global) };
+  const results = [];
+  let outputRemaining = evidenceLimitBytes();
+  for (const request of requests) {
+    if (request.scope !== undefined && !['project', 'global'].includes(request.scope)) {
+      results.push({ request, status: 'failed', error: machineError(new OperationError('invalid_arguments', 'Batch Installation scope must be project or global.', 2)) });
+      continue;
+    }
+    try {
+      const selection = await preflightSelection(request, project, global);
+      const bytes = Buffer.byteLength(JSON.stringify(selection)) + Buffer.byteLength(JSON.stringify(request)) + 128;
+      if (bytes > outputRemaining) throw new OperationError('batch_output_overflow', 'Batch preflight output exceeds the bounded output budget. Split the selection before mutation.');
+      outputRemaining -= bytes;
+      results.push({ request, ...selection, status: 'complete' });
+    } catch (error) {
+      results.push({ request, status: 'failed', error: machineError(error) });
+    }
+  }
+  const counts = new Map();
+  for (const result of results) if (result.status === 'complete') counts.set(installationKey(result.installation), (counts.get(installationKey(result.installation)) ?? 0) + 1);
+  for (let index = 0; index < results.length; index += 1) {
+    const result = results[index];
+    if (result.status === 'complete' && counts.get(installationKey(result.installation)) > 1) {
+      results[index] = { request: result.request, status: 'failed', error: machineError(new OperationError('duplicate_installation', 'Batch selection resolves the same Installation more than once.')) };
+    }
+  }
+  return { version: VERSION, operation: 'preflight', status: results.every(({ status }) => status === 'complete') ? 'complete' : 'failed', results };
 }
 
 function expectedInstallation(options) {
   const source = normalizeSource(options.source);
   if (!source) throw new OperationError('invalid_arguments', 'Expected source normalizes to an empty identity.', 2);
   return { name: options.name, source, scope: options.scope, path: resolve(options.path) };
+}
+
+function installationKey(installation) {
+  return `${installation.name}\0${installation.source}\0${installation.scope}\0${installation.path}`;
+}
+
+async function prepareBatchIdentities(requests) {
+  const prepared = await Promise.all(requests.map(async (request) => {
+    try {
+      const installation = expectedInstallation(request);
+      let canonicalPath = installation.path;
+      try {
+        canonicalPath = await realpath(installation.path);
+      } catch {
+        // Selection reports the concrete inaccessible-path failure independently.
+      }
+      return { request, installation, canonicalKey: installationKey({ ...installation, path: canonicalPath }) };
+    } catch (error) {
+      return { request, error };
+    }
+  }));
+  const counts = new Map();
+  for (const item of prepared) if (item.installation) counts.set(item.canonicalKey, (counts.get(item.canonicalKey) ?? 0) + 1);
+  for (const item of prepared) {
+    if (item.installation && counts.get(item.canonicalKey) > 1) {
+      item.error = new OperationError('duplicate_installation', 'Batch input resolves the same Installation more than once.', 2);
+      delete item.installation;
+    }
+  }
+  return prepared;
 }
 
 async function resolveDirectory(path, code, message) {
@@ -271,9 +403,8 @@ async function resolveDirectory(path, code, message) {
   }
 }
 
-async function selectInstallation(options) {
+async function selectInstallationFromEntries(options, entries) {
   const expected = expectedInstallation(options);
-  const entries = await runList(expected.scope);
   const named = entries.filter((entry) => entry.name === expected.name);
   if (named.length !== 1) throw new OperationError('installation_not_found', `Expected exactly one ${expected.scope} Installation named ${expected.name}.`);
   const entry = named[0];
@@ -287,8 +418,12 @@ async function selectInstallation(options) {
   return { identity: { ...expected, path: actualPath }, installed };
 }
 
-async function capture(options) {
-  const installation = await selectInstallation(options);
+async function selectInstallation(options) {
+  const expected = expectedInstallation(options);
+  return selectInstallationFromEntries(expected, await runList(expected.scope));
+}
+
+async function captureSelected(installation) {
   await validateSkillIdentity(installation.installed, installation.identity.name);
   const handlePath = await mkdtemp(join(tmpdir(), HANDLE_PREFIX));
   const marker = randomBytes(32).toString('hex');
@@ -307,12 +442,35 @@ async function capture(options) {
     throw error;
   }
   return {
-    version: VERSION,
-    operation: 'capture',
     status: 'complete',
     installation: installation.identity,
     handle: { path: handlePath, marker },
   };
+}
+
+async function capture(options) {
+  if (options.installations === undefined) {
+    return { version: VERSION, operation: 'capture', ...await captureSelected(await selectInstallation(options)) };
+  }
+  const requests = stableInstallations(parseBatchInput(options.installations, ['name', 'source', 'path'], { scope: options.scope }));
+  const prepared = await prepareBatchIdentities(requests);
+  let entries;
+  try {
+    entries = await runList(options.scope);
+  } catch (error) {
+    return { version: VERSION, operation: 'capture', status: 'failed', scope: options.scope, results: prepared.map((item) => ({ ...(item.installation ? { installation: item.installation } : { request: item.request }), status: 'failed', error: machineError(item.error ?? error) })) };
+  }
+  const results = [];
+  for (const item of prepared) {
+    try {
+      if (item.error) throw item.error;
+      results.push(await captureSelected(await selectInstallationFromEntries(item.installation, entries)));
+    } catch (error) {
+      results.push({ ...(item.installation ? { installation: item.installation } : { request: item.request }), status: 'failed', error: machineError(error) });
+    }
+  }
+  const successes = results.filter(({ status }) => status === 'complete').length;
+  return { version: VERSION, operation: 'capture', status: successes === results.length ? 'complete' : successes === 0 ? 'failed' : 'partial', scope: options.scope, results };
 }
 
 function sameIdentity(left, right) {
@@ -721,16 +879,22 @@ async function validateChangedSymlink(root, entry) {
   throw new OperationError('escaping_symlink', `Changed symbolic link ${relative(root, entry.absolutePath)} escapes the Installation.`);
 }
 
-async function evidenceBetween(beforeRoot, afterRoot, labels = { before: 'baseline', after: 'installation' }) {
+async function evidenceBetween(beforeRoot, afterRoot, labels = { before: 'baseline', after: 'installation' }, patchBudget = { remaining: patchLimitBytes() }, metadataBudget = { remaining: evidenceLimitBytes() }) {
   const changedPaths = [];
   const changes = [];
-  for await (const change of changedEntriesBetween(beforeRoot, afterRoot)) changes.push(change);
+  let metadataBytes = 0;
+  let patchBytesRemaining = patchBudget.remaining;
+  for await (const change of changedEntriesBetween(beforeRoot, afterRoot)) {
+    metadataBytes += Buffer.byteLength(JSON.stringify(change.path)) * 3
+      + Buffer.byteLength(JSON.stringify({ before: publicMetadata(change.before), after: publicMetadata(change.after) })) + 256;
+    if (metadataBytes > metadataBudget.remaining) throw new OperationError('evidence_output_overflow', 'Changed-path evidence exceeds the bounded output budget. Targeted inspection is required before this workflow can complete.');
+    changes.push(change);
+  }
   changes.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
   const summaries = [];
   const targetedReviewPaths = [];
   const patches = [];
   const patchedPaths = new Set();
-  let patchBytes = 0;
   for (const { path, before: left, after: right } of changes) {
     changedPaths.push(path);
     if (right?.kind === 'symlink') await validateChangedSymlink(afterRoot, right);
@@ -738,10 +902,10 @@ async function evidenceBetween(beforeRoot, afterRoot, labels = { before: 'baseli
     if (patchable) {
       const patch = filePatch(path, left, right, await entryContent(left), await entryContent(right), labels);
       const bytes = patch === null ? Number.POSITIVE_INFINITY : Buffer.byteLength(patch);
-      if (patch !== null && patchBytes + bytes <= MAX_PATCH_BYTES) {
+      if (patch !== null && bytes <= patchBytesRemaining) {
         patches.push(patch);
         patchedPaths.add(path);
-        patchBytes += bytes;
+        patchBytesRemaining -= bytes;
         continue;
       }
     }
@@ -751,33 +915,75 @@ async function evidenceBetween(beforeRoot, afterRoot, labels = { before: 'baseli
   }
   const accounted = new Set([...summaries.map(({ path }) => path), ...patchedPaths]);
   if (accounted.size !== changedPaths.length) throw new OperationError('path_accounting_failed', 'Intent application review did not account for every changed path.');
+  patchBudget.remaining = patchBytesRemaining;
+  metadataBudget.remaining -= metadataBytes;
   return { changedPaths, patch: patches.join(''), summaries, targetedReviewPaths };
 }
 
-async function verifyFulfillment(options) {
-  const installation = expectedInstallation(options);
-  const installedRoot = await resolveDirectory(installation.path, 'installation_unavailable', 'The expected installed path is not an accessible directory.');
+async function verifyFulfillmentGroup(requests, patchBudget, metadataBudget) {
+  const source = requests[0].installation.source;
+  const names = [...new Set(requests.map(({ installation }) => installation.name))].sort();
   const work = await mkdtemp(join(tmpdir(), 'skills-manager-fulfillment-'));
   try {
-    const acquired = await runSkillsCommand(['add', installation.source, '--skill', installation.name, '--agent', 'universal', '--copy', '--yes'], work);
+    const acquired = await runSkillsCommand(['add', source, ...names.flatMap((name) => ['--skill', name]), '--agent', 'universal', '--copy', '--yes'], work);
     if (acquired.exitCode !== 0) throw new OperationError('clean_acquisition_failed', `Clean upstream acquisition failed${acquired.stderr.trim() ? `: ${acquired.stderr.trim()}` : '.'}`);
-    const candidates = (await runList('project', work)).filter((entry) => entry.name === installation.name);
-    if (candidates.length !== 1) throw new OperationError('clean_acquisition_failed', `Clean acquisition did not expose exactly one selected Skill named ${installation.name}.`);
-    if (publicSource(candidates[0]) !== installation.source) throw new OperationError('clean_source_mismatch', 'Clean acquisition returned a different source identity.');
-    const cleanRoot = await resolveDirectory(resolve(candidates[0].path), 'clean_acquisition_failed', 'Clean acquisition path is not an accessible directory.');
+    const listed = await runList('project', work);
     const workRoot = await realpath(work);
-    if (!(cleanRoot === workRoot || cleanRoot.startsWith(`${workRoot}${sep}`))) throw new OperationError('clean_acquisition_failed', 'Clean acquisition path escaped temporary storage.');
-    const evidence = await evidenceBetween(cleanRoot, installedRoot, { before: 'clean-upstream', after: 'installation' });
-    return {
-      version: VERSION,
-      operation: 'verify-fulfillment',
-      status: evidence.targetedReviewPaths.length ? 'targeted_review_required' : 'verification_ready',
-      installation,
-      ...evidence,
-    };
+    const results = [];
+    for (const request of requests) {
+      const { installation, installedRoot } = request;
+      try {
+        const candidates = listed.filter((entry) => entry.name === installation.name);
+        if (candidates.length !== 1) throw new OperationError('clean_acquisition_failed', `Clean acquisition did not expose exactly one selected Skill named ${installation.name}.`);
+        if (publicSource(candidates[0]) !== installation.source) throw new OperationError('clean_source_mismatch', 'Clean acquisition returned a different source identity.');
+        const cleanRoot = await resolveDirectory(resolve(candidates[0].path), 'clean_acquisition_failed', 'Clean acquisition path is not an accessible directory.');
+        if (!contained(workRoot, cleanRoot)) throw new OperationError('clean_acquisition_failed', 'Clean acquisition path escaped temporary storage.');
+        const evidence = await evidenceBetween(cleanRoot, installedRoot, { before: 'clean-upstream', after: 'installation' }, patchBudget, metadataBudget);
+        results.push({ status: evidence.targetedReviewPaths.length ? 'targeted_review_required' : 'verification_ready', installation, ...evidence });
+      } catch (error) {
+        results.push({ status: 'warning', installation, intent: 'retained', error: machineError(error) });
+      }
+    }
+    return results;
   } finally {
     await rm(work, { recursive: true, force: true });
   }
+}
+
+async function verifyFulfillment(options) {
+  if (options.installations === undefined) {
+    const installation = expectedInstallation(options);
+    const installedRoot = await resolveDirectory(installation.path, 'installation_unavailable', 'The expected installed path is not an accessible directory.');
+    const [result] = await verifyFulfillmentGroup([{ installation, installedRoot }], { remaining: patchLimitBytes() }, { remaining: evidenceLimitBytes() });
+    if (result.status === 'warning') throw new OperationError(result.error.code, result.error.message);
+    return { version: VERSION, operation: 'verify-fulfillment', ...result };
+  }
+  const requests = stableInstallations(parseBatchInput(options.installations, INSTALLATION_OPTIONS));
+  const prepared = await prepareBatchIdentities(requests);
+  const ready = [];
+  const results = [];
+  for (const item of prepared) {
+    try {
+      if (item.error) throw item.error;
+      ready.push({ installation: item.installation, installedRoot: await resolveDirectory(item.installation.path, 'installation_unavailable', 'The expected installed path is not an accessible directory.') });
+    } catch (error) {
+      results.push({ status: 'warning', ...(item.installation ? { installation: item.installation } : { request: item.request }), intent: 'retained', error: machineError(error) });
+    }
+  }
+  const groups = Map.groupBy(ready, ({ installation }) => installation.source);
+  const patchBudget = { remaining: patchLimitBytes() };
+  const metadataBudget = { remaining: evidenceLimitBytes() };
+  for (const requests of groups.values()) {
+    try {
+      results.push(...await verifyFulfillmentGroup(requests, patchBudget, metadataBudget));
+    } catch (error) {
+      results.push(...requests.map(({ installation }) => ({ status: 'warning', installation, intent: 'retained', error: machineError(error) })));
+    }
+  }
+  results.sort((left, right) => compareInstallations(left.installation ?? left.request, right.installation ?? right.request));
+  const warnings = results.filter(({ status }) => status === 'warning').length;
+  const complete = results.filter(({ status }) => status === 'verification_ready').length;
+  return { version: VERSION, operation: 'verify-fulfillment', status: warnings === results.length ? 'failed' : complete === results.length ? 'complete' : 'partial', results };
 }
 
 async function review(options) {
@@ -808,6 +1014,7 @@ try {
   const handlers = { preflight, capture, review, close, 'verify-fulfillment': verifyFulfillment };
   const result = await handlers[parsed.operation](parsed.options);
   process.stdout.write(`${JSON.stringify(result)}\n`);
+  if (result.status === 'failed') process.exitCode = 1;
 } catch (error) {
   const result = {
     version: VERSION,
