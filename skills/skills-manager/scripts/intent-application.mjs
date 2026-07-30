@@ -2,15 +2,21 @@
 
 import { isUtf8 } from 'node:buffer';
 import { spawn } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
-import { cp, lstat, mkdtemp, readFile, readdir, readlink, realpath, rm, writeFile } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { cp, lstat, mkdtemp, open, opendir, readFile, readlink, realpath, rm, writeFile } from 'node:fs/promises';
 import { homedir, tmpdir } from 'node:os';
-import { basename, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, join, relative, resolve, sep } from 'node:path';
 
 const VERSION = 1;
 const HANDLE_PREFIX = 'skills-manager-intent-application-';
 const METADATA_FILE = 'handle.json';
 const BASELINE_DIRECTORY = 'baseline';
+const MAX_PATCH_BYTES = 2 * 1024 * 1024;
+const MAX_TEXT_FILE_BYTES = 2 * 1024 * 1024;
+const MAX_DIFF_LINES = 100_000;
+const MAX_CHILD_STREAM_BYTES = 4 * 1024 * 1024;
+const LIST_TIMEOUT_MS = 30_000;
+const ACQUIRE_TIMEOUT_MS = 120_000;
 const INSTALLATION_OPTIONS = ['name', 'source', 'scope', 'path'];
 const OPERATION_SCHEMAS = Object.freeze({
   preflight: { required: ['name'], optional: ['scope'] },
@@ -94,19 +100,70 @@ function validateEntry(entry, expectedScope) {
   return entry;
 }
 
+function commandTimeout(args) {
+  const acquisition = args[0] === 'add';
+  const configured = process.env.NODE_ENV === 'test'
+    ? Number(process.env[acquisition ? 'SKILLS_MANAGER_ACQUIRE_TIMEOUT_MS' : 'SKILLS_MANAGER_LIST_TIMEOUT_MS'])
+    : Number.NaN;
+  return Number.isFinite(configured) && configured > 0 ? configured : acquisition ? ACQUIRE_TIMEOUT_MS : LIST_TIMEOUT_MS;
+}
+
 async function runSkillsCommand(args, cwd = process.cwd()) {
-  const child = spawn('npx', ['skills', ...args], { cwd, env: process.env, stdio: ['ignore', 'pipe', 'pipe'] });
-  let stdout = '';
-  let stderr = '';
-  child.stdout.setEncoding('utf8');
-  child.stderr.setEncoding('utf8');
-  child.stdout.on('data', (chunk) => (stdout += chunk));
-  child.stderr.on('data', (chunk) => (stderr += chunk));
-  const exitCode = await new Promise((done, reject) => {
-    child.on('error', reject);
-    child.on('close', done);
-  });
-  return { exitCode, stdout, stderr };
+  const child = spawn('npx', ['skills', ...args], { cwd, env: process.env, detached: process.platform !== 'win32', stdio: ['ignore', 'pipe', 'pipe'] });
+  const output = { stdout: [], stderr: [] };
+  const sizes = { stdout: 0, stderr: 0 };
+  let failure;
+  const terminate = () => {
+    if (!child.pid) return;
+    if (process.platform === 'win32') {
+      const killer = spawn('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore', windowsHide: true });
+      const fallback = () => {
+        child.kill('SIGKILL');
+        child.stdout.destroy();
+        child.stderr.destroy();
+      };
+      killer.on('error', fallback);
+      killer.on('close', (code) => {
+        if (code !== 0) fallback();
+      });
+      killer.unref();
+    } else {
+      try {
+        process.kill(-child.pid, 'SIGKILL');
+      } catch {
+        child.kill('SIGKILL');
+      }
+    }
+  };
+  const collect = (stream) => (chunk) => {
+    if (failure) return;
+    sizes[stream] += chunk.length;
+    if (sizes[stream] > MAX_CHILD_STREAM_BYTES) {
+      failure = new OperationError('child_output_overflow', `Internal npx skills ${args[0]} ${stream} exceeded 4 MiB.`);
+      terminate();
+      return;
+    }
+    output[stream].push(chunk);
+  };
+  child.stdout.on('data', collect('stdout'));
+  child.stderr.on('data', collect('stderr'));
+  const timer = setTimeout(() => {
+    if (failure) return;
+    failure = new OperationError('child_timeout', `Internal npx skills ${args[0]} timed out after ${commandTimeout(args)} ms.`);
+    terminate();
+  }, commandTimeout(args));
+  timer.unref();
+  let exitCode;
+  try {
+    exitCode = await new Promise((done, reject) => {
+      child.on('error', reject);
+      child.on('close', done);
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+  if (failure) throw failure;
+  return { exitCode, stdout: Buffer.concat(output.stdout).toString('utf8'), stderr: Buffer.concat(output.stderr).toString('utf8') };
 }
 
 async function runList(scope, cwd = process.cwd()) {
@@ -232,6 +289,7 @@ async function selectInstallation(options) {
 
 async function capture(options) {
   const installation = await selectInstallation(options);
+  await validateSkillIdentity(installation.installed, installation.identity.name);
   const handlePath = await mkdtemp(join(tmpdir(), HANDLE_PREFIX));
   const marker = randomBytes(32).toString('hex');
   const metadata = {
@@ -296,40 +354,203 @@ async function validateHandle(options) {
   return { path: suppliedPath, canonicalPath, metadata };
 }
 
-async function tree(root) {
-  const entries = new Map();
-  async function visit(directory) {
-    for (const entry of (await readdir(directory, { withFileTypes: true })).sort((a, b) => a.name.localeCompare(b.name))) {
-      const path = join(directory, entry.name);
-      const name = relative(root, path).split(sep).join('/');
-      if (entry.isDirectory()) await visit(path);
-      else if (entry.isFile()) entries.set(name, { kind: 'file', content: await readFile(path) });
-      else if (entry.isSymbolicLink()) entries.set(name, { kind: 'symlink', content: Buffer.from(`symbolic link -> ${await readlink(path)}\n`) });
-    }
+async function validateSkillIdentity(root, expectedName) {
+  let content;
+  try {
+    const buffer = await readFile(join(root, 'SKILL.md'));
+    if (!isUtf8(buffer)) throw new Error('not UTF-8');
+    content = buffer.toString('utf8');
+  } catch {
+    throw new OperationError('invalid_skill', 'The Installation must contain a readable UTF-8 SKILL.md.');
   }
-  await visit(root);
-  return entries;
+  const frontmatter = /^---\n([\s\S]*?)\n---(?:\n|$)/.exec(content);
+  const names = frontmatter?.[1].split('\n').flatMap((line) => {
+    const match = /^name:\s*(\S.*?)\s*$/.exec(line);
+    return match ? [match[1]] : [];
+  }) ?? [];
+  if (names.length !== 1 || names[0] !== expectedName) throw new OperationError('identity_mismatch', 'SKILL.md no longer matches the expected Skill identity.');
 }
 
-function changedPathsBetween(left, right) {
-  return [...new Set([...left.keys(), ...right.keys()])].sort().filter((path) => {
-    const before = left.get(path);
-    const after = right.get(path);
-    return !before || !after || before.kind !== after.kind || !before.content.equals(after.content);
-  });
+function contained(root, path) {
+  return path === root || path.startsWith(`${root}${sep}`);
 }
 
-function isText(entry) {
-  return entry && entry.kind !== 'file' ? true : entry && !entry.content.includes(0) && isUtf8(entry.content);
+async function fileMetadata(path) {
+  const stat = await lstat(path);
+  const hash = createHash('sha256');
+  const decoder = new TextDecoder('utf-8', { fatal: true });
+  const handle = await open(path, 'r');
+  const chunk = Buffer.allocUnsafe(64 * 1024);
+  let position = 0;
+  let hasBinaryControl = false;
+  let validUtf8 = true;
+  try {
+    while (position < stat.size) {
+      const { bytesRead } = await handle.read(chunk, 0, Math.min(chunk.length, stat.size - position), position);
+      if (bytesRead === 0) break;
+      const bytes = chunk.subarray(0, bytesRead);
+      hash.update(bytes);
+      hasBinaryControl ||= bytes.some((byte) => byte < 0x20 && byte !== 0x09 && byte !== 0x0a && byte !== 0x0d);
+      if (validUtf8) {
+        try {
+          const decoded = decoder.decode(bytes, { stream: true });
+          hasBinaryControl ||= /[\u007f-\u009f]/u.test(decoded);
+        } catch {
+          validUtf8 = false;
+        }
+      }
+      position += bytesRead;
+    }
+    if (validUtf8) {
+      try {
+        decoder.decode();
+      } catch {
+        validUtf8 = false;
+      }
+    }
+  } finally {
+    await handle.close();
+  }
+  return {
+    kind: 'file',
+    format: hasBinaryControl ? 'binary' : validUtf8 ? (stat.size > MAX_TEXT_FILE_BYTES ? 'oversized_text' : 'text') : 'invalid_utf8',
+    size: stat.size,
+    mode: stat.mode,
+    sha256: hash.digest('hex'),
+    absolutePath: path,
+  };
 }
 
-function textLines(entry) {
-  if (!entry || entry.content.length === 0) return [];
-  const text = entry.content.toString('utf8');
+function fixedMetadata(kind, absolutePath, mode, detail = '') {
+  const content = `${kind}:${mode}:${detail}`;
+  return { kind, format: kind, size: Buffer.byteLength(content), mode, sha256: createHash('sha256').update(content).digest('hex'), absolutePath };
+}
+
+async function entryMetadata(path, entry) {
+  const stat = await lstat(path);
+  if (entry.isDirectory()) return fixedMetadata('directory', path, stat.mode);
+  if (entry.isFile()) return fileMetadata(path);
+  if (entry.isSymbolicLink()) {
+    const target = await readlink(path);
+    const content = Buffer.from(`symbolic link -> ${target}\n`);
+    return { kind: 'symlink', format: 'text', size: content.length, mode: stat.mode, sha256: createHash('sha256').update(content).digest('hex'), absolutePath: path, target };
+  }
+  return fixedMetadata('special', path, stat.mode, String(stat.size));
+}
+
+function sameMetadata(before, after) {
+  return before.kind === after.kind && before.size === after.size && before.mode === after.mode && before.sha256 === after.sha256;
+}
+
+async function writeAll(handle, buffer, position) {
+  let written = 0;
+  while (written < buffer.length) {
+    const { bytesWritten } = await handle.write(buffer, written, buffer.length - written, position + written);
+    if (bytesWritten === 0) throw new OperationError('tree_queue_failed', 'Temporary tree traversal queue could not make progress.');
+    written += bytesWritten;
+  }
+}
+
+async function readAll(handle, buffer, position) {
+  let read = 0;
+  while (read < buffer.length) {
+    const { bytesRead } = await handle.read(buffer, read, buffer.length - read, position + read);
+    if (bytesRead === 0) throw new OperationError('tree_queue_failed', 'Temporary tree traversal queue ended unexpectedly.');
+    read += bytesRead;
+  }
+}
+
+async function* walkTree(root) {
+  const work = await mkdtemp(join(tmpdir(), 'skills-manager-tree-'));
+  let queue;
+  try {
+    queue = await open(join(work, 'queue'), 'wx+', 0o600);
+    let readPosition = 0;
+    let writePosition = 0;
+    const enqueue = async (record) => {
+      const content = Buffer.from(JSON.stringify(record));
+      const header = Buffer.allocUnsafe(4);
+      header.writeUInt32BE(content.length);
+      await writeAll(queue, header, writePosition);
+      await writeAll(queue, content, writePosition + header.length);
+      writePosition += header.length + content.length;
+    };
+    const dequeue = async () => {
+      if (readPosition >= writePosition) return null;
+      const header = Buffer.allocUnsafe(4);
+      await readAll(queue, header, readPosition);
+      const content = Buffer.allocUnsafe(header.readUInt32BE());
+      await readAll(queue, content, readPosition + header.length);
+      readPosition += header.length + content.length;
+      return JSON.parse(content.toString('utf8'));
+    };
+    await enqueue({ absolutePath: root, prefix: '' });
+    let pending;
+    while ((pending = await dequeue()) !== null) {
+      const directory = await opendir(pending.absolutePath);
+      for await (const entry of directory) {
+        const absolutePath = join(pending.absolutePath, entry.name);
+        const name = pending.prefix ? `${pending.prefix}/${entry.name}` : entry.name;
+        yield { path: name, absolutePath, entry };
+        if (entry.isDirectory()) await enqueue({ absolutePath, prefix: name });
+      }
+    }
+  } finally {
+    await queue?.close();
+    await rm(work, { recursive: true, force: true });
+  }
+}
+
+async function statOrAbsent(path) {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return null;
+    throw error;
+  }
+}
+
+async function* changedEntriesBetween(beforeRoot, afterRoot) {
+  for await (const item of walkTree(beforeRoot)) {
+    const afterPath = join(afterRoot, ...item.path.split('/'));
+    const afterStat = await statOrAbsent(afterPath);
+    const before = await entryMetadata(item.absolutePath, item.entry);
+    if (!afterStat) {
+      yield { path: item.path, before };
+      continue;
+    }
+    const after = await entryMetadata(afterPath, afterStat);
+    if (!sameMetadata(before, after)) yield { path: item.path, before, after };
+  }
+  for await (const item of walkTree(afterRoot)) {
+    const beforePath = join(beforeRoot, ...item.path.split('/'));
+    if (await statOrAbsent(beforePath)) continue;
+    yield { path: item.path, after: await entryMetadata(item.absolutePath, item.entry) };
+  }
+}
+
+async function entryContent(entry) {
+  if (!entry) return undefined;
+  if (entry.kind === 'symlink') return Buffer.from(`symbolic link -> ${entry.target}\n`);
+  return readFile(entry.absolutePath);
+}
+
+function textLines(content) {
+  if (!content || content.length === 0) return [];
+  const text = content.toString('utf8');
   const endsWithNewline = text.endsWith('\n');
   const lines = text.split('\n');
   if (endsWithNewline) lines.pop();
   return lines.map((line, index) => ({ text: line, terminated: index < lines.length - 1 || endsWithNewline }));
+}
+
+function exceedsLineBudget(content) {
+  if (!content?.length) return false;
+  let lines = content.at(-1) === 0x0a ? 0 : 1;
+  for (const byte of content) {
+    if (byte === 0x0a && ++lines > MAX_DIFF_LINES) return true;
+  }
+  return lines > MAX_DIFF_LINES;
 }
 
 function sameLine(left, right) {
@@ -337,37 +558,83 @@ function sameLine(left, right) {
 }
 
 function lineOperations(before, after) {
-  const rows = Array.from({ length: before.length + 1 }, () => new Uint32Array(after.length + 1));
-  for (let beforeIndex = before.length - 1; beforeIndex >= 0; beforeIndex -= 1) {
-    for (let afterIndex = after.length - 1; afterIndex >= 0; afterIndex -= 1) {
-      rows[beforeIndex][afterIndex] = sameLine(before[beforeIndex], after[afterIndex])
-        ? rows[beforeIndex + 1][afterIndex + 1] + 1
-        : Math.max(rows[beforeIndex + 1][afterIndex], rows[beforeIndex][afterIndex + 1]);
+  let prefix = 0;
+  while (prefix < before.length && prefix < after.length && sameLine(before[prefix], after[prefix])) prefix += 1;
+  let suffix = 0;
+  while (suffix < before.length - prefix && suffix < after.length - prefix
+    && sameLine(before[before.length - 1 - suffix], after[after.length - 1 - suffix])) suffix += 1;
+  const operations = before.slice(0, prefix).map((line) => ({ type: ' ', line }));
+  const left = before.slice(prefix, before.length - suffix);
+  const right = after.slice(prefix, after.length - suffix);
+  const trace = [];
+  let frontier = new Map([[1, 0]]);
+  let completed = false;
+  const maximumEditDistance = Math.min(left.length + right.length, 1024);
+  for (let distance = 0; distance <= maximumEditDistance; distance += 1) {
+    const next = new Map();
+    for (let diagonal = -distance; diagonal <= distance; diagonal += 2) {
+      const down = frontier.get(diagonal + 1) ?? Number.NEGATIVE_INFINITY;
+      const rightward = (frontier.get(diagonal - 1) ?? Number.NEGATIVE_INFINITY) + 1;
+      let x = diagonal === -distance || (diagonal !== distance && rightward < down) ? down : rightward;
+      if (!Number.isFinite(x)) x = 0;
+      let y = x - diagonal;
+      while (x < left.length && y < right.length && sameLine(left[x], right[y])) {
+        x += 1;
+        y += 1;
+      }
+      next.set(diagonal, x);
+      if (x >= left.length && y >= right.length) completed = true;
     }
+    trace.push(next);
+    frontier = next;
+    if (completed) break;
   }
-  const operations = [];
-  let beforeIndex = 0;
-  let afterIndex = 0;
-  while (beforeIndex < before.length || afterIndex < after.length) {
-    if (beforeIndex < before.length && afterIndex < after.length && sameLine(before[beforeIndex], after[afterIndex])) {
-      operations.push({ type: ' ', line: before[beforeIndex] });
-      beforeIndex += 1;
-      afterIndex += 1;
-    } else if (afterIndex >= after.length || (beforeIndex < before.length && rows[beforeIndex + 1][afterIndex] >= rows[beforeIndex][afterIndex + 1])) {
-      operations.push({ type: '-', line: before[beforeIndex] });
-      beforeIndex += 1;
-    } else {
-      operations.push({ type: '+', line: after[afterIndex] });
-      afterIndex += 1;
+  if (completed) {
+    const reversed = [];
+    let x = left.length;
+    let y = right.length;
+    for (let distance = trace.length - 1; distance > 0; distance -= 1) {
+      const previous = trace[distance - 1];
+      const diagonal = x - y;
+      const down = previous.get(diagonal + 1) ?? Number.NEGATIVE_INFINITY;
+      const rightward = previous.get(diagonal - 1) ?? Number.NEGATIVE_INFINITY;
+      const previousDiagonal = diagonal === -distance || (diagonal !== distance && rightward < down) ? diagonal + 1 : diagonal - 1;
+      const previousX = previous.get(previousDiagonal) ?? 0;
+      const previousY = previousX - previousDiagonal;
+      while (x > previousX && y > previousY) {
+        reversed.push({ type: ' ', line: left[x - 1] });
+        x -= 1;
+        y -= 1;
+      }
+      if (x === previousX) {
+        reversed.push({ type: '+', line: right[y - 1] });
+        y -= 1;
+      } else {
+        reversed.push({ type: '-', line: left[x - 1] });
+        x -= 1;
+      }
     }
+    while (x > 0 && y > 0) {
+      reversed.push({ type: ' ', line: left[x - 1] });
+      x -= 1;
+      y -= 1;
+    }
+    while (x > 0) reversed.push({ type: '-', line: left[--x] });
+    while (y > 0) reversed.push({ type: '+', line: right[--y] });
+    for (const operation of reversed.reverse()) operations.push(operation);
+  } else {
+    return null;
   }
+  for (const line of before.slice(before.length - suffix)) operations.push({ type: ' ', line });
   return operations;
 }
 
 function unifiedHunks(before, after) {
   let oldPosition = 1;
   let newPosition = 1;
-  const records = lineOperations(before, after).map((operation) => {
+  const operations = lineOperations(before, after);
+  if (!operations) return null;
+  const records = operations.map((operation) => {
     const record = { ...operation, oldPosition, newPosition };
     if (operation.type !== '+') oldPosition += 1;
     if (operation.type !== '-') newPosition += 1;
@@ -398,18 +665,93 @@ function unifiedHunks(before, after) {
   }).join('');
 }
 
-function filePatch(path, before, after, labels = { before: 'baseline', after: 'installation' }) {
-  const beforeLabel = before ? `${labels.before}/${path}` : '/dev/null';
-  const afterLabel = after ? `${labels.after}/${path}` : '/dev/null';
-  if ((before && !isText(before)) || (after && !isText(after))) return `Binary files ${beforeLabel} and ${afterLabel} differ\n`;
-  const hunks = unifiedHunks(textLines(before), textLines(after));
+function diffLabel(label) {
+  return /[\s"\\\u0000-\u001f\u007f-\u009f]/u.test(label) ? JSON.stringify(label) : label;
+}
+
+function filePatch(path, beforeEntry, afterEntry, beforeContent, afterContent, labels = { before: 'baseline', after: 'installation' }) {
+  const beforeLabel = beforeEntry ? diffLabel(`${labels.before}/${path}`) : '/dev/null';
+  const afterLabel = afterEntry ? diffLabel(`${labels.after}/${path}`) : '/dev/null';
+  if (beforeEntry?.sha256 !== afterEntry?.sha256 && (exceedsLineBudget(beforeContent) || exceedsLineBudget(afterContent))) return null;
+  const hunks = beforeEntry?.sha256 === afterEntry?.sha256 ? '' : unifiedHunks(textLines(beforeContent), textLines(afterContent));
+  if (hunks === null) return null;
+  const modeChanges = beforeEntry && afterEntry && beforeEntry.mode !== afterEntry.mode
+    ? [`old mode ${beforeEntry.mode.toString(8)}`, `new mode ${afterEntry.mode.toString(8)}`]
+    : [];
   return [
     `diff -- ${beforeLabel} ${afterLabel}`,
+    ...modeChanges,
     `--- ${beforeLabel}`,
     `+++ ${afterLabel}`,
     hunks.endsWith('\n') ? hunks.slice(0, -1) : hunks,
     '',
   ].join('\n');
+}
+
+function publicMetadata(entry) {
+  return entry ? { size: entry.size, mode: entry.mode, sha256: entry.sha256 } : null;
+}
+
+function summaryKind(before, after) {
+  const formats = [before?.format, after?.format];
+  if (formats.includes('oversized_text')) return 'oversized_text';
+  if (formats.includes('binary')) return 'binary';
+  if (formats.includes('invalid_utf8')) return 'invalid_utf8';
+  if (formats.includes('directory')) return 'directory';
+  if (formats.includes('special')) return 'special';
+  return 'patch_limit';
+}
+
+async function validateChangedSymlink(root, entry) {
+  const candidate = resolve(dirname(entry.absolutePath), entry.target);
+  if (!contained(root, candidate)) throw new OperationError('escaping_symlink', `Changed symbolic link ${relative(root, entry.absolutePath)} escapes the Installation.`);
+  let probe = candidate;
+  while (contained(root, probe)) {
+    try {
+      if (!contained(root, await realpath(probe))) throw new OperationError('escaping_symlink', `Changed symbolic link ${relative(root, entry.absolutePath)} escapes the Installation.`);
+      return;
+    } catch (error) {
+      if (error instanceof OperationError) throw error;
+      if (error.code !== 'ENOENT') throw error;
+      const parent = dirname(probe);
+      if (parent === probe) break;
+      probe = parent;
+    }
+  }
+  throw new OperationError('escaping_symlink', `Changed symbolic link ${relative(root, entry.absolutePath)} escapes the Installation.`);
+}
+
+async function evidenceBetween(beforeRoot, afterRoot, labels = { before: 'baseline', after: 'installation' }) {
+  const changedPaths = [];
+  const changes = [];
+  for await (const change of changedEntriesBetween(beforeRoot, afterRoot)) changes.push(change);
+  changes.sort((left, right) => left.path < right.path ? -1 : left.path > right.path ? 1 : 0);
+  const summaries = [];
+  const targetedReviewPaths = [];
+  const patches = [];
+  const patchedPaths = new Set();
+  let patchBytes = 0;
+  for (const { path, before: left, after: right } of changes) {
+    changedPaths.push(path);
+    if (right?.kind === 'symlink') await validateChangedSymlink(afterRoot, right);
+    const patchable = (!left || left.format === 'text') && (!right || right.format === 'text');
+    if (patchable) {
+      const patch = filePatch(path, left, right, await entryContent(left), await entryContent(right), labels);
+      const bytes = patch === null ? Number.POSITIVE_INFINITY : Buffer.byteLength(patch);
+      if (patch !== null && patchBytes + bytes <= MAX_PATCH_BYTES) {
+        patches.push(patch);
+        patchedPaths.add(path);
+        patchBytes += bytes;
+        continue;
+      }
+    }
+    const kind = summaryKind(left, right);
+    summaries.push({ path, kind, before: publicMetadata(left), after: publicMetadata(right) });
+    if (kind === 'oversized_text' || kind === 'patch_limit') targetedReviewPaths.push(path);
+  }
+  const accounted = new Set([...summaries.map(({ path }) => path), ...patchedPaths]);
+  if (accounted.size !== changedPaths.length) throw new OperationError('path_accounting_failed', 'Intent application review did not account for every changed path.');
+  return { changedPaths, patch: patches.join(''), summaries, targetedReviewPaths };
 }
 
 async function verifyFulfillment(options) {
@@ -425,15 +767,13 @@ async function verifyFulfillment(options) {
     const cleanRoot = await resolveDirectory(resolve(candidates[0].path), 'clean_acquisition_failed', 'Clean acquisition path is not an accessible directory.');
     const workRoot = await realpath(work);
     if (!(cleanRoot === workRoot || cleanRoot.startsWith(`${workRoot}${sep}`))) throw new OperationError('clean_acquisition_failed', 'Clean acquisition path escaped temporary storage.');
-    const [clean, installed] = await Promise.all([tree(cleanRoot), tree(installedRoot)]);
-    const changedPaths = changedPathsBetween(clean, installed);
+    const evidence = await evidenceBetween(cleanRoot, installedRoot, { before: 'clean-upstream', after: 'installation' });
     return {
       version: VERSION,
       operation: 'verify-fulfillment',
-      status: 'verification_ready',
+      status: evidence.targetedReviewPaths.length ? 'targeted_review_required' : 'verification_ready',
       installation,
-      changedPaths,
-      patch: changedPaths.map((path) => filePatch(path, clean.get(path), installed.get(path), { before: 'clean-upstream', after: 'installation' })).join(''),
+      ...evidence,
     };
   } finally {
     await rm(work, { recursive: true, force: true });
@@ -443,15 +783,14 @@ async function verifyFulfillment(options) {
 async function review(options) {
   const handle = await validateHandle(options);
   const installationRoot = await resolveDirectory(resolve(handle.metadata.installation.path), 'installation_unavailable', 'The Installation no longer exists.');
-  const [before, after] = await Promise.all([tree(join(handle.canonicalPath, BASELINE_DIRECTORY)), tree(installationRoot)]);
-  const changedPaths = changedPathsBetween(before, after);
+  await validateSkillIdentity(installationRoot, handle.metadata.installation.name);
+  const evidence = await evidenceBetween(join(handle.canonicalPath, BASELINE_DIRECTORY), installationRoot);
   return {
     version: VERSION,
     operation: 'review',
-    status: changedPaths.length === 0 ? 'no_application_change' : 'review_required',
+    status: evidence.changedPaths.length === 0 ? 'no_application_change' : evidence.targetedReviewPaths.length ? 'targeted_review_required' : 'review_required',
     installation: handle.metadata.installation,
-    changedPaths,
-    patch: changedPaths.map((path) => filePatch(path, before.get(path), after.get(path))).join(''),
+    ...evidence,
   };
 }
 

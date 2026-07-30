@@ -228,3 +228,15 @@ test('Skills Manager self-Update rejects active Intents and preserves the ordina
   assert.match(removal, /unsupported[\s\S]*no pending state[\s\S]*no cross-session[\s\S]*no automatic workaround/is);
   assert.match(removal, /absent[\s\S]*npx skills update skills-manager --(?:project|global)[\s\S]*new Agent session/is);
 });
+
+test('distributed review contract publishes fixed resource bounds and targeted follow-up semantics', async () => {
+  const helper = await readFile(join(skillRoot, 'scripts/intent-application.mjs'), 'utf8');
+  const intents = await readFile(join(skillRoot, 'references/intents.md'), 'utf8');
+  assert.match(helper, /MAX_PATCH_BYTES\s*=\s*2\s*\*\s*1024\s*\*\s*1024/);
+  assert.match(helper, /MAX_CHILD_STREAM_BYTES\s*=\s*4\s*\*\s*1024\s*\*\s*1024/);
+  assert.match(helper, /LIST_TIMEOUT_MS\s*=\s*30_000/);
+  assert.match(helper, /ACQUIRE_TIMEOUT_MS\s*=\s*120_000/);
+  assert.match(intents, /targeted_review_required[\s\S]*cannot complete[\s\S]*targeted inspection/i);
+  assert.match(intents, /workflow-integrity[\s\S]*`SKILL\.md` is readable UTF-8[\s\S]*Skill identity[\s\S]*changed symlink[\s\S]*every changed path/i);
+  assert.match(intents, /does not execute[\s\S]*judge Skill quality[\s\S]*validate untouched content[\s\S]*generic Skill validator/i);
+});

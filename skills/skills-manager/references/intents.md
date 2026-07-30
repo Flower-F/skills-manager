@@ -54,7 +54,13 @@ Identity resolution is complete when exactly one public Installation and matchin
      --handle <handle-path> --marker <random-marker>
    ```
 
-   A `no_application_change` result has an empty patch and does not authorize Intent deletion. A `review_required` result contains changes that the Agent must account for through every `changedPaths` entry. Review is repeatable: correct any unrelated or incomplete change, then review again against the original baseline. Never present the result as an inventory of historical local customization.
+   A `no_application_change` result has an empty patch and does not authorize Intent deletion. A `review_required` result contains changes that the Agent must account for through every `changedPaths` entry. Binary and invalid UTF-8 changes use bounded size-and-hash `summaries`; ordinary text uses focused local unified hunks.
+
+   A `targeted_review_required` result means oversized text, a bounded diff-alignment or line budget, or the 2 MiB total patch limit withheld detail. The Managed workflow cannot complete until every `targetedReviewPaths` entry is accounted for through targeted inspection. Treat every changed path as covered only when it appears in the patch, a bounded summary, or that targeted-review list.
+
+   Review performs only workflow-integrity checks: the Installation exists, `SKILL.md` is readable UTF-8 with the same Skill identity, every changed symlink remains contained, the handle identity still matches, and every changed path is accounted for. It does not execute upstream scripts, judge Skill quality, validate untouched content, or become a generic Skill validator.
+
+   Review is repeatable: correct any unrelated or incomplete change, then review again against the original baseline. Never present the result as an inventory of historical local customization.
 6. Close the Baseline handle after successful completion, a Conflict, or cancellation. Use the matching `--outcome complete|conflict|cancelled` value:
 
    ```sh

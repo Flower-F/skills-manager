@@ -30,6 +30,14 @@ import { dirname, join } from 'node:path';
 await appendFile(process.env.FAKE_CALLS, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }) + '\\n');
 const args = process.argv.slice(2);
 if (args[0] !== 'skills') process.exit(91);
+if (process.env.FAKE_DESCENDANT_DELAY_MS) {
+  const { spawn } = await import('node:child_process');
+  const descendant = spawn(process.execPath, ['-e', 'setTimeout(() => {}, Number(process.argv[1]))', process.env.FAKE_DESCENDANT_DELAY_MS], { stdio: ['ignore', 'inherit', 'inherit'] });
+  await new Promise((resolve) => descendant.on('close', resolve));
+}
+if (process.env.FAKE_DELAY_COMMAND === args[1]) await new Promise((resolve) => setTimeout(resolve, Number(process.env.FAKE_DELAY_MS || 0)));
+if (process.env.FAKE_STDOUT_BYTES) process.stdout.write('o'.repeat(Number(process.env.FAKE_STDOUT_BYTES)));
+if (process.env.FAKE_STDERR_BYTES) process.stderr.write('e'.repeat(Number(process.env.FAKE_STDERR_BYTES)));
 if (args[1] === 'update') {
   if (process.env.FAKE_UPDATE_FAIL === '1') process.exit(13);
   if (process.env.FAKE_UPDATE_WARNING) process.stderr.write(process.env.FAKE_UPDATE_WARNING);
@@ -377,6 +385,68 @@ test('focused unified hunks preserve blank context lines', async () => {
   await rm(capture.json.handle.path, { recursive: true });
 });
 
+test('focused unified hunks separate distant edits without dumping unchanged middle content', async () => {
+  const fixture = await captureFixture();
+  const before = Array.from({ length: 24 }, (_, index) => `line ${index + 1}`);
+  await write(join(fixture.installed, 'notes.md'), `${before.join('\n')}\n`);
+  const capture = await run(['capture', ...fixture.args], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  const after = [...before];
+  after[1] = 'first change';
+  after[22] = 'second change';
+  await write(join(fixture.installed, 'notes.md'), `${after.join('\n')}\n`);
+  const review = await run(['review', ...fixture.args, ...handleArgs(capture)], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  assert.equal(review.exitCode, 0, review.stderr);
+  assert.equal(review.json.patch.match(/^@@ /gm)?.length, 2);
+  assert.doesNotMatch(review.json.patch, /^ line 12$/m);
+  await rm(capture.json.handle.path, { recursive: true });
+});
+
+test('focused unified hunks retain alignment across a large insertion plus a later edit', async () => {
+  const fixture = await captureFixture();
+  const before = Array.from({ length: 400 }, (_, index) => `stable line ${index + 1}`);
+  await write(join(fixture.installed, 'notes.md'), `${before.join('\n')}\n`);
+  const capture = await run(['capture', ...fixture.args], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  const after = [...before];
+  after.splice(100, 0, ...Array.from({ length: 200 }, (_, index) => `inserted line ${index + 1}`));
+  after[550] = 'later edit';
+  await write(join(fixture.installed, 'notes.md'), `${after.join('\n')}\n`);
+  const review = await run(['review', ...fixture.args, ...handleArgs(capture)], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  assert.equal(review.exitCode, 0, review.stderr);
+  assert.equal(review.json.status, 'review_required');
+  assert.equal(review.json.patch.match(/^@@ /gm)?.length, 2);
+  assert.doesNotMatch(review.json.patch, /^ stable line 200$/m);
+  await rm(capture.json.handle.path, { recursive: true });
+});
+
+test('diff alignment budget becomes targeted review instead of a whole-file replacement', async () => {
+  const fixture = await captureFixture();
+  const before = Array.from({ length: 1_030 }, (_, index) => `stable line ${index + 1}`);
+  await write(join(fixture.installed, 'many-edits.md'), `${before.join('\n')}\n`);
+  const capture = await run(['capture', ...fixture.args], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  const after = before.map((line, index) => index % 2 === 0 ? `changed line ${index + 1}` : line);
+  await write(join(fixture.installed, 'many-edits.md'), `${after.join('\n')}\n`);
+  const review = await run(['review', ...fixture.args, ...handleArgs(capture)], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  assert.equal(review.exitCode, 0, review.stderr);
+  assert.equal(review.json.status, 'targeted_review_required');
+  assert.equal(review.json.patch, '');
+  assert.deepEqual(review.json.targetedReviewPaths, ['many-edits.md']);
+  assert.equal(review.json.summaries[0].kind, 'patch_limit');
+  await rm(capture.json.handle.path, { recursive: true });
+});
+
+test('newline-dense text uses targeted review before line objects amplify memory', async () => {
+  const fixture = await captureFixture();
+  await write(join(fixture.installed, 'dense.txt'), `${'\n'.repeat(100_001)}before\n`);
+  const capture = await run(['capture', ...fixture.args], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  await write(join(fixture.installed, 'dense.txt'), `${'\n'.repeat(100_001)}after\n`);
+  const review = await run(['review', ...fixture.args, ...handleArgs(capture)], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  assert.equal(review.exitCode, 0, review.stderr);
+  assert.equal(review.json.status, 'targeted_review_required');
+  assert.deepEqual(review.json.targetedReviewPaths, ['dense.txt']);
+  assert.equal(review.json.summaries[0].kind, 'patch_limit');
+  await rm(capture.json.handle.path, { recursive: true });
+});
+
 test('a public installed directory symlink remains reviewable through the captured identity path', async () => {
   const root = await temp('skills-manager-symlinked-installation-');
   const project = join(root, 'project');
@@ -444,4 +514,212 @@ test('changed symbolic links are represented in attempt-local evidence', async (
   assert.match(review.json.patch, /symbolic link -> target-b/);
   await rm(fixture.result.json.handle.path, { recursive: true });
   await rm(capture.json.handle.path, { recursive: true });
+});
+
+test('review summarizes binary and invalid UTF-8 changes with bounded size and hash metadata', async () => {
+  const fixture = await captureFixture();
+  await write(join(fixture.installed, 'asset.bin'), Buffer.from([0, 1, 2, 3]));
+  await write(join(fixture.installed, 'invalid.txt'), Buffer.from([0xc3, 0x28]));
+  await write(join(fixture.installed, 'control.dat'), Buffer.from([1, 2, 3, 4]));
+  const capture = await run(['capture', ...fixture.args], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  await write(join(fixture.installed, 'asset.bin'), Buffer.from([0, 4, 5]));
+  await write(join(fixture.installed, 'invalid.txt'), Buffer.from([0xff, 0xfe, 0xfd]));
+  await write(join(fixture.installed, 'control.dat'), Buffer.from([5, 6, 7, 8]));
+  const review = await run(['review', ...fixture.args, ...handleArgs(capture)], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  assert.equal(review.exitCode, 0, review.stderr);
+  assert.equal(review.json.status, 'review_required');
+  assert.deepEqual(review.json.changedPaths, ['asset.bin', 'control.dat', 'invalid.txt']);
+  assert.equal(review.json.patch, '');
+  assert.deepEqual(review.json.summaries.map(({ path, kind }) => [path, kind]), [['asset.bin', 'binary'], ['control.dat', 'binary'], ['invalid.txt', 'invalid_utf8']]);
+  for (const summary of review.json.summaries) for (const side of ['before', 'after']) {
+    assert.equal(Number.isInteger(summary[side].size), true);
+    assert.match(summary[side].sha256, /^[a-f0-9]{64}$/);
+  }
+  assert.deepEqual(review.json.targetedReviewPaths, []);
+  await rm(capture.json.handle.path, { recursive: true });
+});
+
+test('mixed binary-to-oversized text changes still require targeted review', async () => {
+  const fixture = await captureFixture();
+  await write(join(fixture.installed, 'mixed.dat'), Buffer.from([0, 1, 2]));
+  const capture = await run(['capture', ...fixture.args], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  await write(join(fixture.installed, 'mixed.dat'), 'x'.repeat(2 * 1024 * 1024 + 1));
+  const review = await run(['review', ...fixture.args, ...handleArgs(capture)], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  assert.equal(review.exitCode, 0, review.stderr);
+  assert.equal(review.json.status, 'targeted_review_required');
+  assert.deepEqual(review.json.targetedReviewPaths, ['mixed.dat']);
+  assert.equal(review.json.summaries[0].kind, 'oversized_text');
+  await rm(capture.json.handle.path, { recursive: true });
+});
+
+test('review accounts for empty directories and escapes control characters in patch paths', async () => {
+  const fixture = await captureFixture();
+  const capture = await run(['capture', ...fixture.args], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  await mkdir(join(fixture.installed, 'empty'));
+  await write(join(fixture.installed, 'bad\n--- forged.md'), 'content\n');
+  const review = await run(['review', ...fixture.args, ...handleArgs(capture)], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  assert.equal(review.exitCode, 0, review.stderr);
+  assert.deepEqual(review.json.changedPaths, ['bad\n--- forged.md', 'empty']);
+  assert.deepEqual(review.json.summaries.map(({ path, kind }) => [path, kind]), [['empty', 'directory']]);
+  assert.match(review.json.patch, /"installation\/bad\\n--- forged\.md"/);
+  assert.doesNotMatch(review.json.patch, /\n--- forged\.md\n/);
+  await rm(fixture.result.json.handle.path, { recursive: true });
+  await rm(capture.json.handle.path, { recursive: true });
+});
+
+test('review accounts for executable-mode changes without treating untouched content as invalid', async () => {
+  const fixture = await captureFixture();
+  await write(join(fixture.installed, 'script.sh'), '#!/bin/sh\nexit 0\n');
+  await chmod(join(fixture.installed, 'script.sh'), 0o644);
+  const capture = await run(['capture', ...fixture.args], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  await chmod(join(fixture.installed, 'script.sh'), 0o755);
+  const review = await run(['review', ...fixture.args, ...handleArgs(capture)], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  assert.equal(review.exitCode, 0, review.stderr);
+  assert.equal(review.json.status, 'review_required');
+  assert.deepEqual(review.json.changedPaths, ['script.sh']);
+  assert.match(review.json.patch, /old mode 100644[\s\S]*new mode 100755/);
+  await rm(capture.json.handle.path, { recursive: true });
+});
+
+test('review accounts for directory-mode changes with bounded metadata', async () => {
+  const fixture = await captureFixture();
+  await mkdir(join(fixture.installed, 'private'), { mode: 0o755 });
+  const capture = await run(['capture', ...fixture.args], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  await chmod(join(fixture.installed, 'private'), 0o700);
+  const review = await run(['review', ...fixture.args, ...handleArgs(capture)], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  assert.equal(review.exitCode, 0, review.stderr);
+  assert.equal(review.json.status, 'review_required');
+  assert.deepEqual(review.json.changedPaths, ['private']);
+  assert.equal(review.json.summaries[0].kind, 'directory');
+  assert.notEqual(review.json.summaries[0].before.mode, review.json.summaries[0].after.mode);
+  await rm(capture.json.handle.path, { recursive: true });
+});
+
+test('deep-tree comparison bounds open directory handles while preserving accounting', async () => {
+  const fixture = await captureFixture();
+  const capture = await run(['capture', ...fixture.args], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  const segments = Array.from({ length: 64 }, (_, index) => `d${index}`);
+  const deepest = join(fixture.installed, ...segments);
+  await write(join(deepest, 'leaf.txt'), 'leaf\n');
+  await Promise.all(Array.from({ length: 200 }, (_, index) => mkdir(join(deepest, `wide-${index}`))));
+  const review = await run(['review', ...fixture.args, ...handleArgs(capture)], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+  assert.equal(review.exitCode, 0, review.stderr);
+  assert.equal(review.json.status, 'review_required');
+  assert.equal(review.json.changedPaths.length, 265);
+  assert.ok(review.json.changedPaths.includes(`${segments.join('/')}/leaf.txt`));
+  await rm(capture.json.handle.path, { recursive: true });
+});
+
+test('oversized text and total patch overflow require targeted review with complete path accounting', async (t) => {
+  await t.test('oversized text', async () => {
+    const fixture = await captureFixture();
+    const large = `${'line\n'.repeat(430_000)}before\n`;
+    await write(join(fixture.installed, 'large.md'), large);
+    const capture = await run(['capture', ...fixture.args], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+    await write(join(fixture.installed, 'large.md'), `${large.slice(0, -7)}after\n`);
+    const review = await run(['review', ...fixture.args, ...handleArgs(capture)], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+    assert.equal(review.exitCode, 0, review.stderr || JSON.stringify(review.json));
+    assert.equal(review.json.status, 'targeted_review_required');
+    assert.deepEqual(review.json.changedPaths, ['large.md']);
+    assert.deepEqual(review.json.targetedReviewPaths, ['large.md']);
+    assert.deepEqual(review.json.summaries.map(({ path, kind }) => [path, kind]), [['large.md', 'oversized_text']]);
+    assert.ok(Buffer.byteLength(review.json.patch) <= 2 * 1024 * 1024);
+    await rm(capture.json.handle.path, { recursive: true });
+  });
+
+  await t.test('total patch overflow', async () => {
+    const fixture = await captureFixture();
+    for (const name of ['one.md', 'two.md', 'three.md']) await write(join(fixture.installed, name), `${'before line\n'.repeat(55_000)}`);
+    const capture = await run(['capture', ...fixture.args], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+    for (const name of ['one.md', 'two.md', 'three.md']) await write(join(fixture.installed, name), `${'after line\n'.repeat(55_000)}`);
+    const review = await run(['review', ...fixture.args, ...handleArgs(capture)], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+    assert.equal(review.exitCode, 0, review.stderr || JSON.stringify(review.json));
+    assert.equal(review.json.status, 'targeted_review_required');
+    assert.ok(Buffer.byteLength(review.json.patch) <= 2 * 1024 * 1024);
+    const patched = review.json.changedPaths.filter((path) => review.json.patch.includes(`baseline/${path}`));
+    assert.deepEqual(new Set([...patched, ...review.json.summaries.map(({ path }) => path), ...review.json.targetedReviewPaths]), new Set(review.json.changedPaths));
+    assert.ok(review.json.targetedReviewPaths.length > 0);
+    await rm(capture.json.handle.path, { recursive: true });
+  });
+});
+
+test('review preserves trailing-newline evidence and rejects broken workflow integrity', async (t) => {
+  await t.test('trailing newline', async () => {
+    const fixture = await captureFixture();
+    await write(join(fixture.installed, 'notes.md'), 'same line\n');
+    const capture = await run(['capture', ...fixture.args], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+    await write(join(fixture.installed, 'notes.md'), 'same line');
+    const review = await run(['review', ...fixture.args, ...handleArgs(capture)], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+    assert.equal(review.exitCode, 0, review.stderr);
+    assert.match(review.json.patch, /\\ No newline at end of file/);
+    await rm(capture.json.handle.path, { recursive: true });
+  });
+
+  for (const [label, mutate, code] of [
+    ['missing SKILL.md', async (fixture) => rm(join(fixture.installed, 'SKILL.md')), 'invalid_skill'],
+    ['invalid UTF-8 SKILL.md', async (fixture) => write(join(fixture.installed, 'SKILL.md'), Buffer.from([0xff])), 'invalid_skill'],
+    ['changed Skill identity', async (fixture) => write(join(fixture.installed, 'SKILL.md'), '---\nname: beta\n---\n'), 'identity_mismatch'],
+    ['escaping changed symlink', async (fixture) => symlink('../../outside', join(fixture.installed, 'escape')), 'escaping_symlink'],
+  ]) await t.test(label, async () => {
+    const fixture = await captureFixture();
+    await mutate(fixture);
+    const review = await run(['review', ...fixture.args, ...handleArgs(fixture.result)], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+    assert.equal(review.exitCode, 1);
+    assert.equal(review.json.error.code, code);
+    await rm(fixture.result.json.handle.path, { recursive: true });
+  });
+
+  await t.test('escaping changed symlink through a dangling target chain', async () => {
+    const fixture = await captureFixture();
+    await mkdir(join(fixture.root, 'outside'), { recursive: true });
+    await symlink('../../outside', join(fixture.installed, 'redirect'));
+    const capture = await run(['capture', ...fixture.args], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+    await symlink('redirect/missing', join(fixture.installed, 'escape-chain'));
+    const review = await run(['review', ...fixture.args, ...handleArgs(capture)], { cwd: fixture.project, fake: fixture.fake, env: fixture.env });
+    assert.equal(review.exitCode, 1);
+    assert.equal(review.json.error.code, 'escaping_symlink');
+    await rm(fixture.result.json.handle.path, { recursive: true });
+    await rm(capture.json.handle.path, { recursive: true });
+  });
+});
+
+test('internal child timeout and per-stream overflow return bounded machine failures', async (t) => {
+  const root = await temp('skills-manager-child-bounds-');
+  const project = join(root, 'project');
+  const installed = join(project, 'alpha');
+  await write(join(installed, 'SKILL.md'), '---\nname: alpha\n---\n');
+  const fake = await fakeNpx(join(root, 'fake'));
+  const base = { FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]), NODE_ENV: 'test' };
+  for (const [label, env, code] of [
+    ['list timeout', { ...base, FAKE_DELAY_COMMAND: 'list', FAKE_DELAY_MS: '100', SKILLS_MANAGER_LIST_TIMEOUT_MS: '20' }, 'child_timeout'],
+    ['stdout overflow', { ...base, FAKE_STDOUT_BYTES: String(4 * 1024 * 1024 + 1) }, 'child_output_overflow'],
+    ['stderr overflow', { ...base, FAKE_STDERR_BYTES: String(4 * 1024 * 1024 + 1) }, 'child_output_overflow'],
+  ]) await t.test(label, async () => {
+    const result = await run(['preflight', '--name', 'alpha'], { cwd: project, fake, env });
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.json.error.code, code);
+    assert.ok(Buffer.byteLength(result.stdout) < 16 * 1024);
+  });
+
+  await t.test('timeout terminates descendants that inherit helper pipes', async () => {
+    const started = Date.now();
+    const result = await run(['preflight', '--name', 'alpha'], {
+      cwd: project,
+      fake,
+      env: { ...base, FAKE_DESCENDANT_DELAY_MS: '2000', SKILLS_MANAGER_LIST_TIMEOUT_MS: '20' },
+    });
+    assert.equal(result.exitCode, 1);
+    assert.equal(result.json.error.code, 'child_timeout');
+    assert.ok(Date.now() - started < 1000);
+  });
+
+  const verificationFixture = await captureFixture();
+  const acquisition = await run(['verify-fulfillment', ...verificationFixture.args], {
+    cwd: verificationFixture.project,
+    fake: verificationFixture.fake,
+    env: { ...verificationFixture.env, NODE_ENV: 'test', FAKE_DELAY_COMMAND: 'add', FAKE_DELAY_MS: '100', SKILLS_MANAGER_ACQUIRE_TIMEOUT_MS: '20' },
+  });
+  assert.equal(acquisition.exitCode, 1);
+  assert.equal(acquisition.json.error.code, 'child_timeout');
+  await rm(verificationFixture.result.json.handle.path, { recursive: true });
 });
