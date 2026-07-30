@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 import { execFile } from 'node:child_process';
-import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import process from 'node:process';
@@ -55,12 +55,12 @@ try {
   const installedRoot = join(project, '.agents', 'skills', 'skills-manager');
   const installedSkill = await readFile(join(installedRoot, 'SKILL.md'), 'utf8');
   if (!/^---\nname: skills-manager\n/u.test(installedSkill)) throw new Error('installed Skill has unexpected identity');
-  await access(join(installedRoot, 'scripts', 'intent-application.mjs'));
-  try {
-    await access(join(installedRoot, 'scripts', 'customization-patch.mjs'));
-    throw new Error('installed Skill retained the obsolete helper compatibility entry point');
-  } catch (error) {
-    if (error.code !== 'ENOENT') throw error;
+  const installedScripts = (await readdir(join(installedRoot, 'scripts'), { withFileTypes: true }))
+    .filter((entry) => entry.isFile())
+    .map((entry) => entry.name)
+    .sort();
+  if (installedScripts.length !== 1 || installedScripts[0] !== 'intent-application.mjs') {
+    throw new Error(`unexpected installed helper scripts: ${installedScripts.join(', ')}`);
   }
 
   const installedNames = (await readdir(join(project, '.agents', 'skills'), { withFileTypes: true }))

@@ -54,11 +54,21 @@ scope: project
 
 之后，“更新我已安装的 Skills 并保留所有有效的 Intent”会更新上游 Skill，并在维持已批准结果的同时调整具体实现。任何语义变更仍然需要你的批准。
 
+## Managed Update 如何工作
+
+每次 Update 都先执行 **Update preflight**：在任何上游变更之前解析准确的 Installation，并验证对应的 Intent 文档。如果没有有效 Intent，上游包操作成功就是快速路径的完成条件，不会创建基线，也不会获取干净上游内容。
+
+如果 Installation 有有效 Intent，Skills Manager 会在上游更新成功后捕获临时的 **Intent application baseline**，并返回短期有效的 **Baseline handle**。Agent 随后重新应用已批准的结果，把 **Intent application patch** 审查并转述为 **Intent application evidence**，逐一分类 Intent，最后关闭 handle。已经存在于该基线中的行为属于 **Baseline-satisfied Intent**，仍保持有效。只有在准备提出 **Upstream-fulfilled Intent** 时才会按需获取干净上游内容；在你确认删除之前，该 Intent 仍然具有权威性。
+
+如果上游变更命令启动后失败、超时或被中断，Skills Manager 会报告 **Unknown mutation outcome**；任何恢复都必须从新的 preflight 开始，绝不会自动重试变更。批量 Update 按作用域共享公开列表读取，并按规范化来源共享可选的干净上游获取，同时保持每个 Installation 的结果和 Baseline handle 相互独立。
+
 ## 边界
 
 - `npx skills` 始终是唯一的包管理器。Skills Manager 在此基础上提供推荐、批准、Intent 和语义化重新应用能力。
 - 项目级和全局 Installation 分别维护独立的 Intent 文档。
 - Local Skill 不支持受跟踪的上游 Update，也不支持与干净上游版本进行比较。
+- 直接修改 Intent 时，会先捕获基线、再记录已批准的 Intent，随后修改已安装内容、审查本次应用并关闭 Baseline handle。移除 Intent 时，只有在已应用行为被移除并审查完成后，才删除有效结果。
+- 已自定义的 Skills Manager 会在变更前拒绝 self-Update；未自定义的 self-Update 完成后会要求启动新的 Agent 会话。
 - 本项目仅通过 GitHub 分发，不会发布为 npm 包；公开预览期间不支持 `npx skills` 2.x。
 
 > [!CAUTION]

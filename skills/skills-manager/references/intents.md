@@ -74,7 +74,7 @@ Identity resolution is complete when exactly one public Installation and matchin
 
 Intent mutation is complete when the document contains exactly the approved active outcomes and the selected Installation satisfies each outcome, or when a semantic Conflict has been presented without an Agent-chosen revision.
 
-## Remove an Intent
+## Intent removal
 
 1. Resolve the exact Installation and obtain approval to remove the selected semantic outcome.
 2. Capture the current Installation before changing either installed content or active outcomes. The existing Intent document remains authoritative throughout removal review.

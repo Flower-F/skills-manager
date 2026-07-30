@@ -65,6 +65,7 @@ test('tracked release exposes exactly one Skill and excludes local development s
 test('public policy surface and local Markdown links are complete', async () => {
   const required = [
     'README.md',
+    'README.zh-CN.md',
     'LICENSE',
     'CONTRIBUTING.md',
     'CODE_OF_CONDUCT.md',
@@ -91,11 +92,13 @@ test('public policy surface and local Markdown links are complete', async () => 
   assert.equal(packageJson.engines.node, '>=22');
 
   const readme = await readFile(resolve('README.md'), 'utf8');
+  const translatedReadme = await readFile(resolve('README.zh-CN.md'), 'utf8');
   assert.match(readme, /Public Preview/);
   assert.match(readme, /npx skills add Flower-F\/skills-manager/);
   assert.match(readme, /Node(?:\.js)? 22 and 24/);
   assert.match(readme, />=1\.5\.19 <2\.0\.0/);
   assert.match(readme, /raw[\s\S]*not automatically redacted/i);
+  assert.match(translatedReadme, /原始内容[\s\S]*不会自动脱敏/);
 });
 
 test('community policies express the accepted contribution, support, and release contracts', async () => {
@@ -171,14 +174,43 @@ test('package exposes only native Node checks with no runtime dependencies or bu
 });
 
 test('maintained product surface uses public upstream commands and the simplified domain model', async () => {
-  const files = [resolve('README.md'), resolve('SECURITY.md'), ...await markdownFiles(skillRoot)];
+  const files = [
+    resolve('README.md'),
+    resolve('README.zh-CN.md'),
+    resolve('SECURITY.md'),
+    resolve('CHANGELOG.md'),
+    resolve('docs/releases/v0.1.0.md'),
+    resolve('docs/adr/0017-delegate-package-management-to-npx-skills.md'),
+    resolve('docs/adr/0018-resolve-update-before-mutation.md'),
+    resolve('docs/adr/0019-review-attempt-local-intent-application.md'),
+    resolve('scripts/smoke-clean-checkout.mjs'),
+    ...await markdownFiles(skillRoot),
+  ];
   const content = (await Promise.all(files.map((path) => readFile(path, 'utf8')))).join('\n');
   for (const command of ['find', 'add', 'list', 'update', 'remove']) assert.match(content, new RegExp(`npx skills ${command}`));
-  for (const term of ['Intent', 'Installation', 'Intent application baseline', 'Baseline handle', 'Intent application evidence', 'Update']) assert.match(content, new RegExp(term));
+  for (const term of ['Update preflight', 'Intent application baseline', 'Baseline handle', 'Intent application patch', 'Intent application evidence', 'Baseline-satisfied Intent', 'Upstream-fulfilled Intent', 'Unknown mutation outcome']) assert.match(content, new RegExp(term));
   assert.doesNotMatch(content, /Customization[- ]patch|customization-patch\.mjs/i);
   for (const obsolete of ['work-order', 'continuation', 'runtime registry', 'work-directory', 'restart_required', 'Archaeology', 'Effective intents', 'structured JSON workflow']) {
     assert.doesNotMatch(content, new RegExp(obsolete, 'i'));
   }
+});
+
+test('published guidance presents one complete Managed workflow lifecycle', async () => {
+  const skill = await readFile(join(skillRoot, 'SKILL.md'), 'utf8');
+  const intents = await readFile(join(skillRoot, 'references/intents.md'), 'utf8');
+  const update = await readFile(join(skillRoot, 'references/update.md'), 'utf8');
+  const removal = await readFile(join(skillRoot, 'references/removal.md'), 'utf8');
+  const release = await readFile(resolve('docs/releases/v0.1.0.md'), 'utf8');
+
+  assert.match(skill, /direct Intent mutation[\s\S]*Intent removal[\s\S]*batch Updates?[\s\S]*upstream-fulfillment verification[\s\S]*self-Update/i);
+  assert.match(intents, /Obtain approval[\s\S]*capture[\s\S]*Save the approved Intent[\s\S]*modify the Installation[\s\S]*review[\s\S]*close/i);
+  assert.match(intents, /Intent removal[\s\S]*capture[\s\S]*remove only[\s\S]*review[\s\S]*final semantic commit point[\s\S]*close/i);
+  assert.match(update, /Update preflight[\s\S]*direct upstream operation[\s\S]*No active Intent[\s\S]*Active Intent[\s\S]*capture[\s\S]*review[\s\S]*close/i);
+  assert.match(update, /Only when[\s\S]*Upstream-fulfilled[\s\S]*verify-fulfillment[\s\S]*user confirmation/i);
+  assert.match(update, /Multiple Installations[\s\S]*one project listing and one global listing[\s\S]*one selected-scope listing[\s\S]*one clean acquisition per source/i);
+  assert.match(removal, /active Intent document[\s\S]*reject[\s\S]*before running `npx skills update skills-manager`/i);
+  assert.match(release, /Update preflight[\s\S]*no active Intent[\s\S]*Baseline handle[\s\S]*Upstream-fulfilled Intent[\s\S]*batch/i);
+  assert.match(release, /raw[\s\S]*not automatically redacted/i);
 });
 
 test('Agent instructions cover selection, semantic Update, removal, and self-Update branches', async () => {
@@ -214,7 +246,7 @@ test('single-Skill Update contract preflights before direct mutation and closes 
 
 test('Intent removal commits semantic authority last and keeps failed review retryable', async () => {
   const intents = await readFile(join(skillRoot, 'references/intents.md'), 'utf8');
-  assert.match(intents, /Remove an Intent[\s\S]*capture[\s\S]*Intent document remains authoritative[\s\S]*remove.*applied behavior[\s\S]*review[\s\S]*delete.*outcome[\s\S]*delete.*document[\s\S]*close/is);
+  assert.match(intents, /Intent removal[\s\S]*capture[\s\S]*Intent document remains authoritative[\s\S]*remove.*applied behavior[\s\S]*review[\s\S]*delete.*outcome[\s\S]*delete.*document[\s\S]*close/is);
   assert.match(intents, /unrelated[\s\S]*incomplete[\s\S]*Conflict[\s\S]*Intent document unchanged[\s\S]*same Baseline handle[\s\S]*review again/is);
   assert.match(intents, /Conflict terminates[\s\S]*--outcome conflict/i);
   assert.match(intents, /other active outcomes remain[\s\S]*save the reduced document[\s\S]*final active outcome[\s\S]*delete the Intent document[\s\S]*final semantic commit point[\s\S]*close/is);
