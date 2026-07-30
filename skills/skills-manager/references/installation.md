@@ -1,4 +1,4 @@
-# Ordinary management
+# Discovery, installation, and listing
 
 Use only public, unversioned `npx skills` commands. Upstream owns scope, target Agents, physical locations, topology, security prompts, and telemetry behavior.
 

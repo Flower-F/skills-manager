@@ -4,7 +4,7 @@ Skills Manager is an Agent-facing workflow for managing Skills through the publi
 
 `npx skills` is the sole package manager. It owns discovery results, installation scope, target Agents, physical paths and topology, security and telemetry prompts, upstream package metadata, Update, and removal. Skills Manager adds need-aware recommendations, Markdown Intent documents, semantic Intent application, and one read-only Customization-patch helper.
 
-## Ordinary management
+## Discovery, installation, and listing
 
 - Need-driven discovery: `npx skills find <need>`
 - Source curation: `npx skills add <source> --list`

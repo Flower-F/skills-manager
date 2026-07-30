@@ -50,12 +50,12 @@ test('maintained product surface uses public upstream commands and the simplifie
 });
 
 test('Agent instructions cover selection, semantic Update, removal, and self-Update branches', async () => {
-  const ordinary = await readFile(join(skillRoot, 'references/ordinary-management.md'), 'utf8');
+  const installation = await readFile(join(skillRoot, 'references/installation.md'), 'utf8');
   const intents = await readFile(join(skillRoot, 'references/intents.md'), 'utf8');
   const update = await readFile(join(skillRoot, 'references/update.md'), 'utf8');
   const removal = await readFile(join(skillRoot, 'references/removal.md'), 'utf8');
-  assert.match(ordinary, /Agent-native choice interface/);
-  assert.match(ordinary, /approval for the exact selection/);
+  assert.match(installation, /Agent-native choice interface/);
+  assert.match(installation, /approval for the exact selection/);
   assert.match(intents, /Save the approved Intent before applying it/);
   assert.match(intents, /No Intent document[\s\S]*Active Intents, empty patch[\s\S]*Non-empty patch/);
   assert.match(update, /main Agent invokes one `npx skills update/);

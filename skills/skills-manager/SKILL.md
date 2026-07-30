@@ -10,7 +10,7 @@ description: Manage Agent Skills through npx skills and preserve semantic custom
 ## Route the request
 
 1. Choose the matching branch and read its reference before acting:
-   - Discovery, repository curation, installation, listing, or Local Skills: [ordinary management](references/ordinary-management.md).
+   - Discovery, repository curation, installation, listing, or Local Skills: [installation](references/installation.md).
    - Adding, editing, applying, reviewing, or removing a customization: [Intents and Customization patches](references/intents.md).
    - One or many upstream Updates: [semantic Update](references/update.md).
    - Managed removal or Skills Manager self-Update: [removal and self-Update](references/removal.md).
