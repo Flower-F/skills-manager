@@ -45,8 +45,7 @@ async function assertLocalMarkdownLinks(paths) {
 
 test('distributed Skill frontmatter and local Markdown links are valid', async () => {
   const skill = await readFile(join(skillRoot, 'SKILL.md'), 'utf8');
-  assert.match(skill, /^---\nname: skills-manager\ndescription: .+\n---\n/);
-  assert.doesNotMatch(skill, /disable-model-invocation/);
+  assert.match(skill, /^---\nname: skills-manager\ndescription: .+\ndisable-model-invocation: true\n---\n/);
   for (const path of await markdownFiles(skillRoot)) {
     const content = await readFile(path, 'utf8');
     for (const match of content.matchAll(/\[[^\]]+\]\(([^)#]+\.md)(?:#[^)]+)?\)/g)) {
