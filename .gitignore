@@ -2,5 +2,10 @@ node_modules/
 .DS_Store
 *.log
 
+# Reproducible contributor tooling and Agent execution state are local-only.
+.agents/
+.scratch/
+skills-lock.json
+
 # 可重建的本地运行状态；Intent 档案不忽略
 .skills-manager/state.json

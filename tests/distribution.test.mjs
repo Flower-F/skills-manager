@@ -1,9 +1,12 @@
 import assert from 'node:assert/strict';
+import { execFile } from 'node:child_process';
 import { access, readFile, readdir } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
+import { promisify } from 'node:util';
 
 const skillRoot = resolve('skills/skills-manager');
+const execFileAsync = promisify(execFile);
 
 async function markdownFiles(directory) {
   const result = [];
@@ -15,6 +18,20 @@ async function markdownFiles(directory) {
   return result;
 }
 
+async function trackedFiles() {
+  const { stdout } = await execFileAsync('git', ['ls-files', '-z']);
+  return stdout.split('\0').filter(Boolean);
+}
+
+async function assertLocalMarkdownLinks(paths) {
+  for (const path of paths) {
+    const content = await readFile(path, 'utf8');
+    for (const match of content.matchAll(/\[[^\]]+\]\((?!https?:|mailto:|#)([^)#]+)(?:#[^)]+)?\)/g)) {
+      await access(resolve(dirname(path), decodeURIComponent(match[1])));
+    }
+  }
+}
+
 test('distributed Skill frontmatter and local Markdown links are valid', async () => {
   const skill = await readFile(join(skillRoot, 'SKILL.md'), 'utf8');
   assert.match(skill, /^---\nname: skills-manager\ndescription: .+\n---\n/);
@@ -24,6 +41,117 @@ test('distributed Skill frontmatter and local Markdown links are valid', async (
     for (const match of content.matchAll(/\[[^\]]+\]\(([^)#]+\.md)(?:#[^)]+)?\)/g)) {
       await access(resolve(dirname(path), match[1]));
     }
+  }
+});
+
+test('tracked release exposes exactly one Skill and excludes local development state', async () => {
+  const files = await trackedFiles();
+  const skillManifests = files.filter((path) => /(?:^|\/)skills\/[^/]+\/SKILL\.md$/.test(path));
+  assert.deepEqual(skillManifests, ['skills/skills-manager/SKILL.md']);
+  for (const forbidden of [
+    /^\.agents\//,
+    /^\.scratch\//,
+    /^skills-lock\.json$/,
+    /^docs\/research\/impeccable-source-research\.md$/,
+  ]) {
+    assert.equal(files.some((path) => forbidden.test(path)), false, `tracked forbidden path: ${forbidden}`);
+  }
+});
+
+test('public policy surface and local Markdown links are complete', async () => {
+  const required = [
+    'README.md',
+    'LICENSE',
+    'CONTRIBUTING.md',
+    'CODE_OF_CONDUCT.md',
+    'SECURITY.md',
+    'SUPPORT.md',
+    'CHANGELOG.md',
+    'docs/adr/README.md',
+    '.github/ISSUE_TEMPLATE/bug_report.yml',
+    '.github/ISSUE_TEMPLATE/feature_request.yml',
+    '.github/ISSUE_TEMPLATE/config.yml',
+    '.github/pull_request_template.md',
+    '.github/workflows/ci.yml',
+    '.github/workflows/upstream-compatibility.yml',
+    '.github/workflows/release-gate.yml',
+    'docs/releases/history-rewrite.md',
+    'docs/releases/v0.1.0.md',
+  ].map((path) => resolve(path));
+  await Promise.all(required.map((path) => access(path)));
+  const publicMarkdown = (await trackedFiles()).filter((path) => path.endsWith('.md')).map((path) => resolve(path));
+  await assertLocalMarkdownLinks(publicMarkdown);
+
+  const packageJson = JSON.parse(await readFile(resolve('package.json'), 'utf8'));
+  assert.equal(packageJson.private, true);
+  assert.equal(packageJson.license, 'MIT');
+  assert.equal(packageJson.engines.node, '>=22');
+
+  const readme = await readFile(resolve('README.md'), 'utf8');
+  assert.match(readme, /Public Preview/);
+  assert.match(readme, /npx skills add Flower-F\/skills-manager/);
+  assert.match(readme, /Node(?:\.js)? 22 and 24/);
+  assert.match(readme, />=1\.5\.19 <2\.0\.0/);
+  assert.match(readme, /raw[\s\S]*not automatically redacted/i);
+});
+
+test('community policies express the accepted contribution, support, and release contracts', async () => {
+  const contributing = await readFile(resolve('CONTRIBUTING.md'), 'utf8');
+  assert.match(contributing, /maintainer-led/);
+  assert.match(contributing, /new feature, domain-model change, or breaking behavior/i);
+  assert.match(contributing, /Developer Certificate of Origin 1\.1/);
+  assert.match(contributing, /does not require a CLA, copyright assignment/i);
+  assert.match(contributing, /\.agents\/[\s\S]*skills-lock\.json[\s\S]*\.scratch\//);
+
+  const conduct = await readFile(resolve('CODE_OF_CONDUCT.md'), 'utf8');
+  assert.match(conduct, /Contributor Covenant 3\.0/);
+  assert.match(conduct, /Flower-F GitHub profile/);
+  assert.doesNotMatch(conduct, /[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/);
+
+  const security = await readFile(resolve('SECURITY.md'), 'utf8');
+  assert.match(security, /Private Vulnerability Reporting/);
+  assert.match(security, /within 7 calendar days/);
+  assert.match(security, /within 14 calendar days/);
+  assert.match(security, /at least every 30 calendar days/);
+  assert.match(security, /not a promise of a fixed remediation date/);
+
+  const support = await readFile(resolve('SUPPORT.md'), 'utf8');
+  assert.match(support, /best effort/);
+  assert.match(support, /no response-time or resolution SLA/);
+  assert.match(support, /upstream skills project/);
+
+  const changelog = await readFile(resolve('CHANGELOG.md'), 'utf8');
+  assert.match(changelog, /Public Preview/);
+  assert.match(changelog, /change-driven releases/);
+  assert.match(changelog, /migration instructions/);
+});
+
+test('CI separates deterministic, fixed-baseline, moving compatibility, DCO, and release gates', async () => {
+  const ci = await readFile(resolve('.github/workflows/ci.yml'), 'utf8');
+  assert.match(ci, /node: \[22, 24\]/);
+  assert.match(ci, /SKILLS_CLI_VERSION: 1\.5\.19/);
+  assert.match(ci, /DCO 1\.1 sign-off/);
+
+  const scheduled = await readFile(resolve('.github/workflows/upstream-compatibility.yml'), 'utf8');
+  assert.match(scheduled, /schedule:/);
+  assert.match(scheduled, /SKILLS_CLI_VERSION: \^1\.5\.19/);
+
+  const release = await readFile(resolve('.github/workflows/release-gate.yml'), 'utf8');
+  assert.match(release, /fetch-depth: 0/);
+  assert.match(release, /gitleaks\/gitleaks-action@v2/);
+  assert.match(release, /matrix:[\s\S]*skills: \['1\.5\.19', '\^1\.5\.19'\]/);
+
+  for (const workflow of [ci, scheduled, release]) {
+    assert.match(workflow, /permissions:\n  contents: read/);
+    assert.doesNotMatch(workflow, /pull_request_target|secrets\./);
+  }
+});
+
+test('tracked release contains no machine-local absolute paths', async () => {
+  const machineRoot = Buffer.from(['', 'Users', ''].join('/'));
+  for (const path of await trackedFiles()) {
+    const content = await readFile(resolve(path));
+    assert.equal(content.includes(machineRoot), false, `machine-local path in ${path}`);
   }
 });
 

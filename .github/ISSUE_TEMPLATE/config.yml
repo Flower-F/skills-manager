@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Usage question
+    url: https://github.com/Flower-F/skills-manager/issues?q=is%3Aissue+label%3Aquestion
+    about: Search existing questions before opening a labeled support issue.
+  - name: Vulnerability report
+    url: https://github.com/Flower-F/skills-manager/security/advisories/new
+    about: Report vulnerabilities privately; never disclose exploit details in a public issue.
+  - name: Upstream npx skills defect
+    url: https://github.com/vercel-labs/skills/issues/new/choose
+    about: Report package-manager discovery, installation, Update, removal, security, telemetry, or metadata defects upstream.

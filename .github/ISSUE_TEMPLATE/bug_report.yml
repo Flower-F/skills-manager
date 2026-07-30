@@ -1,0 +1,44 @@
+name: Bug report
+description: Report reproducible behavior owned by Skills Manager
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not report vulnerabilities here; use the private route in SECURITY.md. Problems owned by `npx skills` belong upstream.
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Observed behavior
+      description: What happened, and what did you expect instead?
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: Provide the smallest safe sequence that reproduces the issue. Remove credentials and private Skill content.
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+    validations:
+      required: true
+  - type: input
+    id: skills
+    attributes:
+      label: npx skills version
+    validations:
+      required: true
+  - type: checkboxes
+    id: routing
+    attributes:
+      label: Routing checks
+      options:
+        - label: This is not a vulnerability or sensitive security report.
+          required: true
+        - label: This behavior belongs to Skills Manager rather than the upstream package manager.
+          required: true
