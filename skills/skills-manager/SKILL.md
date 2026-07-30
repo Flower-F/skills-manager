@@ -1,6 +1,7 @@
 ---
 name: skills-manager
 description: Manage Agent Skills through npx skills and preserve semantic customizations. Use when discovering, selecting, installing, listing, customizing, updating, or removing Skills, including batch Updates and Skills Manager self-Update.
+disable-model-invocation: true
 ---
 
 # Skills Manager
