@@ -17,10 +17,18 @@ Managed removal is complete when public listing proves whether the selected Inst
 
 ## Skills Manager self-Update
 
-Run the ordinary upstream command:
+1. Run normal Update preflight before any self-Update mutation:
 
-```sh
-npx skills update skills-manager
-```
+   ```sh
+   node <skill-directory>/scripts/intent-application.mjs preflight --name skills-manager
+   ```
 
-After success, end the current management workflow immediately and ask the user to start a new Agent session. Self-Update is complete when the upstream command succeeded and the new session is the next Skills Manager action.
+2. If preflight returns an active Intent document, reject customized self-Update before running `npx skills update skills-manager`. Report that reconciling Skills Manager's own active Intents across the required session boundary is unsupported. Create no pending state, no cross-session state, and no automatic workaround; leave the Installation and Intent document unchanged.
+3. If preflight reports that the Intent document is absent, run the ordinary direct upstream command with the resolved scope:
+
+   ```sh
+   npx skills update skills-manager --project
+   npx skills update skills-manager --global
+   ```
+
+4. After success, end the current management workflow immediately and ask the user to start a new Agent session. Self-Update is complete when the upstream command succeeded and the new Agent session is the next Skills Manager action.

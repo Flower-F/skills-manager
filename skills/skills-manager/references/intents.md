@@ -67,3 +67,15 @@ Identity resolution is complete when exactly one public Installation and matchin
    Close validates the handle before deleting its temporary baseline. Do not retain a registry, report, rollback copy, or resume state. Abrupt-session residue remains operating-system temporary content.
 
 Intent mutation is complete when the document contains exactly the approved active outcomes and the selected Installation satisfies each outcome, or when a semantic Conflict has been presented without an Agent-chosen revision.
+
+## Remove an Intent
+
+1. Resolve the exact Installation and obtain approval to remove the selected semantic outcome.
+2. Capture the current Installation before changing either installed content or active outcomes. The existing Intent document remains authoritative throughout removal review.
+3. Remove only the selected Intent's applied behavior from the Installation. Do not edit or delete the Intent document yet; every other active outcome must remain satisfied.
+4. Review the removal against the Baseline handle. Account for every changed path and verify that the selected behavior is gone while unrelated behavior and every remaining Intent are preserved.
+5. If review finds an unrelated removal, incomplete semantic cleanup, or a Conflict, leave the Intent document unchanged and keep the same Baseline handle available. Correct the Installation and review again. If the Conflict terminates the removal instead of proceeding to correction, close the handle with `--outcome conflict`; on cancellation, leave the Intent authoritative and close with `--outcome cancelled`.
+6. Only after successful review, delete the selected outcome from the Intent document. If other active outcomes remain, save the reduced document. If this was the final active outcome, delete the Intent document. This document mutation is the final semantic commit point: interruption before it leaves the old Intent authoritative; interruption after it cannot leave applied customization without authority.
+7. Close the Baseline handle with `--outcome complete`. Do not create a tombstone, pending state, or removal history.
+
+Intent removal is complete only after the applied behavior has been removed and reviewed, the authoritative active outcomes have been committed last, and the Baseline handle has been closed.

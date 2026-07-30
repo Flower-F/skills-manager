@@ -211,3 +211,20 @@ test('single-Skill Update contract preflights before direct mutation and closes 
   assert.match(update, /at most four ordinary `npx skills` invocations/i);
   assert.doesNotMatch(update, /intent-application\.mjs update|run.*npx skills update/i);
 });
+
+test('Intent removal commits semantic authority last and keeps failed review retryable', async () => {
+  const intents = await readFile(join(skillRoot, 'references/intents.md'), 'utf8');
+  assert.match(intents, /Remove an Intent[\s\S]*capture[\s\S]*Intent document remains authoritative[\s\S]*remove.*applied behavior[\s\S]*review[\s\S]*delete.*outcome[\s\S]*delete.*document[\s\S]*close/is);
+  assert.match(intents, /unrelated[\s\S]*incomplete[\s\S]*Conflict[\s\S]*Intent document unchanged[\s\S]*same Baseline handle[\s\S]*review again/is);
+  assert.match(intents, /Conflict terminates[\s\S]*--outcome conflict/i);
+  assert.match(intents, /other active outcomes remain[\s\S]*save the reduced document[\s\S]*final active outcome[\s\S]*delete the Intent document[\s\S]*final semantic commit point[\s\S]*close/is);
+  assert.match(intents, /Do not create a tombstone, pending state, or removal history/i);
+  assert.doesNotMatch(intents, /^## .*tombstone|^tombstone:|pending removal|deactivat/im);
+});
+
+test('Skills Manager self-Update rejects active Intents and preserves the ordinary no-Intent path', async () => {
+  const removal = await readFile(join(skillRoot, 'references/removal.md'), 'utf8');
+  assert.match(removal, /self-Update[\s\S]*intent-application\.mjs preflight[\s\S]*active Intent[\s\S]*reject[\s\S]*before[\s\S]*npx skills update skills-manager/is);
+  assert.match(removal, /unsupported[\s\S]*no pending state[\s\S]*no cross-session[\s\S]*no automatic workaround/is);
+  assert.match(removal, /absent[\s\S]*npx skills update skills-manager --(?:project|global)[\s\S]*new Agent session/is);
+});
