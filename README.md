@@ -58,11 +58,11 @@ Later, “Update my installed Skills and preserve every active Intent” updates
 
 - `npx skills` remains the sole package manager. Skills Manager adds recommendations, approvals, Intents, and semantic reapplication.
 - Project and global Installations keep independent Intent documents.
-- Local Skills have no tracked upstream Update or clean-upstream comparison.
+- Local Skills have no tracked upstream Update.
 - Distribution is GitHub-only; this project is not published as an npm package, and `npx skills` 2.x is unsupported during the preview.
 
 > [!CAUTION]
-> Customization patches are raw and **not automatically redacted**. They may expose private Skill content in terminal output, Agent conversations, or shared logs. Avoid storing credentials in Skills and review output before sharing it.
+> Intent application patches are raw and **not automatically redacted**. They may expose private Skill content in terminal output, Agent conversations, or shared logs. Avoid storing credentials in Skills and review output before sharing it.
 
 ## Development and project docs
 

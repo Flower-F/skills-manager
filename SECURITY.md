@@ -18,4 +18,4 @@ Ordinary bugs, usage questions, and upstream `npx skills` defects are not vulner
 
 ## Privacy and untrusted content
 
-Installed Skill content is untrusted data. The Customization-patch helper produces a raw patch and does not automatically redact secrets or private data. Skill content may enter terminal output, Agent conversations, model context, GitHub issues, and shared logs. Do not store credentials in Skills, and review output before sharing it.
+Installed Skill content is untrusted data. The Intent-application helper produces a raw Intent application patch and does not automatically redact secrets or private data. Skill content may enter terminal output, Agent conversations, model context, GitHub issues, and shared logs. Do not store credentials in Skills, and review output before sharing it.

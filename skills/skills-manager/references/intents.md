@@ -1,4 +1,4 @@
-# Intents and Customization patches
+# Intents and Intent application
 
 An **Intent** is one user-approved semantic outcome for one Skill identity in one Installation scope. Record the outcome before editing installed content; the document remains authoritative if application is interrupted.
 
@@ -34,32 +34,36 @@ Identity resolution is complete when exactly one public Installation and matchin
 ## Mutate and apply
 
 1. Obtain approval for the semantic outcome.
-2. Create the document lazily for the first Intent, or edit the active bullet list. Keep its content exactly within the identity-and-active-outcomes form above.
-3. Save the approved Intent before applying it.
-4. Edit only the installed `path` returned by public upstream listing. This operation leaves the upstream version unchanged.
-5. Verify the installed Skill satisfies every active Intent. Implementation adaptation is allowed when it preserves the same semantic result; weakening, broadening, replacing, or otherwise revising the result requires user approval.
-6. When removing an Intent, delete its active bullet. Delete the document when its final active Intent is removed.
+2. Before changing the Intent document, capture an Intent application baseline for the selected Installation:
+
+   ```sh
+   node <skill-directory>/scripts/intent-application.mjs capture \
+     --name <skill-name> --source <normalized-source> \
+     --scope <project|global> --path <installed-path>
+   ```
+
+   Capture refreshes exactly the selected scope through public listing, verifies the expected name, normalized source, scope, and path, then returns stable JSON containing a Baseline handle. If capture fails, leave both the Intent document and Installation unchanged.
+3. Create the document lazily for the first Intent, or edit the active bullet list. Save the approved Intent, then modify the Installation. Keep the document exactly within the identity-and-active-outcomes form above.
+4. Modify only the selected Installation `path` to satisfy every active Intent. This leaves the upstream version unchanged. Implementation adaptation is allowed when it preserves the same semantic result; weakening, broadening, replacing, or otherwise revising the result requires user approval.
+5. Review the Intent application against the same Baseline handle. Translate the machine result into conversational Intent application evidence describing only changes made during the current Managed workflow attempt:
+
+   ```sh
+   node <skill-directory>/scripts/intent-application.mjs review \
+     --name <skill-name> --source <normalized-source> \
+     --scope <project|global> --path <installed-path> \
+     --handle <handle-path> --marker <random-marker>
+   ```
+
+   A `no_application_change` result has an empty patch and does not authorize Intent deletion. A `review_required` result contains changes that the Agent must account for through every `changedPaths` entry. Review is repeatable: correct any unrelated or incomplete change, then review again against the original baseline. Never present the result as an inventory of historical local customization.
+6. Close the Baseline handle after successful completion, a Conflict, or cancellation. Use the matching `--outcome complete|conflict|cancelled` value:
+
+   ```sh
+   node <skill-directory>/scripts/intent-application.mjs close \
+     --name <skill-name> --source <normalized-source> \
+     --scope <project|global> --path <installed-path> \
+     --handle <handle-path> --marker <random-marker> --outcome <outcome>
+   ```
+
+   Close validates the handle before deleting its temporary baseline. Do not retain a registry, report, rollback copy, or resume state. Abrupt-session residue remains operating-system temporary content.
 
 Intent mutation is complete when the document contains exactly the approved active outcomes and the selected Installation satisfies each outcome, or when a semantic Conflict has been presented without an Agent-chosen revision.
-
-## Review a Customization patch
-
-Normal invocation takes only the Skill name:
-
-```sh
-node <skill-directory>/scripts/customization-patch.mjs <skill-name>
-```
-
-Use `--scope project` or `--scope global` only after the helper reports a real cross-scope ambiguity and the user resolves it. The helper reads public upstream listing output, acquires clean upstream content in temporary storage, compares without modifying the Installation, and cleans temporary content on success and failure.
-
-Interpret its three terminal states exactly:
-
-- **No Intent document:** end the semantic branch. Acquire and apply no patch.
-- **Active Intents, empty patch:** determine whether clean upstream now fulfills every Intent or application is incomplete. Propose removing an upstream-fulfilled Intent, and remove it only after user confirmation.
-- **Non-empty patch:** translate the raw text into ephemeral natural-language Customization evidence. Verify every observed change corresponds to an active Intent and surface unrelated changes.
-
-The patch is best-effort because public upstream metadata may not expose the exact installed revision. Local Skills and missing source metadata have no supported clean-upstream comparison.
-
-Content containing NUL bytes or invalid UTF-8 is reported as a binary difference; its bytes are not decoded into the textual patch.
-
-Review is complete when every active Intent is classified as applied, adapted, upstream-fulfilled, incomplete, or conflicting, and every observed customization is accounted for without persisting evidence or a report.

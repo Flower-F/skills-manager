@@ -22,6 +22,6 @@ Source-driven installation is complete when public upstream listing shows every 
 ## List and Local Skills
 
 - Use `npx skills list` for people and `npx skills list --json` only when machine-readable Installation identity is required.
-- Local sources follow ordinary upstream discovery, installation, listing, and removal. They are user-maintained at their local source, so Skills Manager offers neither semantic upstream Update nor a clean-upstream Customization patch for them.
+- Local sources follow ordinary upstream discovery, installation, listing, and removal. They are user-maintained at their local source, so Skills Manager offers no semantic upstream Update for them.
 
 Listing is complete when the upstream result has been explained without inferring undisclosed runtime directories or copies.

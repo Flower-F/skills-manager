@@ -55,7 +55,13 @@ try {
   const installedRoot = join(project, '.agents', 'skills', 'skills-manager');
   const installedSkill = await readFile(join(installedRoot, 'SKILL.md'), 'utf8');
   if (!/^---\nname: skills-manager\n/u.test(installedSkill)) throw new Error('installed Skill has unexpected identity');
-  await access(join(installedRoot, 'scripts', 'customization-patch.mjs'));
+  await access(join(installedRoot, 'scripts', 'intent-application.mjs'));
+  try {
+    await access(join(installedRoot, 'scripts', 'customization-patch.mjs'));
+    throw new Error('installed Skill retained the obsolete helper compatibility entry point');
+  } catch (error) {
+    if (error.code !== 'ENOENT') throw error;
+  }
 
   const installedNames = (await readdir(join(project, '.agents', 'skills'), { withFileTypes: true }))
     .filter((entry) => entry.isDirectory())
