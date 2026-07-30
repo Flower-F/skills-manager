@@ -12,7 +12,7 @@ if (!base || !head) {
   process.exit(2);
 }
 
-const { stdout } = await execFileAsync('git', ['rev-list', '--no-merges', `${base}..${head}`]);
+const { stdout } = await execFileAsync('git', ['rev-list', `${base}..${head}`]);
 const commits = stdout.trim().split('\n').filter(Boolean);
 const missing = [];
 

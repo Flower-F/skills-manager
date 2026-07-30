@@ -3,14 +3,9 @@
 import { execFile } from 'node:child_process';
 import process from 'node:process';
 import { promisify } from 'node:util';
+import { isForbiddenReleasePath } from './release-policy.mjs';
 
 const execFileAsync = promisify(execFile);
-const forbiddenPaths = [
-  '.agents/',
-  '.scratch/',
-  'skills-lock.json',
-  'docs/research/impeccable-source-research.md',
-];
 const machineRoot = ['', 'Users', ''].join('/');
 
 const { stdout } = await execFileAsync('git', ['rev-list', '--all']);
@@ -22,7 +17,7 @@ for (const revision of revisions) {
     maxBuffer: 50 * 1024 * 1024,
   });
   for (const path of tree.trim().split('\n').filter(Boolean)) {
-    if (forbiddenPaths.some((forbidden) => path === forbidden || path.startsWith(forbidden))) {
+    if (isForbiddenReleasePath(path)) {
       violations.push(`${revision}: forbidden path ${path}`);
     }
   }

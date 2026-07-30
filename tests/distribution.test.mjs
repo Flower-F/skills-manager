@@ -4,6 +4,7 @@ import { access, readFile, readdir } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
+import { isForbiddenReleasePath } from '../scripts/release-policy.mjs';
 
 const skillRoot = resolve('skills/skills-manager');
 const execFileAsync = promisify(execFile);
@@ -48,14 +49,8 @@ test('tracked release exposes exactly one Skill and excludes local development s
   const files = await trackedFiles();
   const skillManifests = files.filter((path) => /(?:^|\/)skills\/[^/]+\/SKILL\.md$/.test(path));
   assert.deepEqual(skillManifests, ['skills/skills-manager/SKILL.md']);
-  for (const forbidden of [
-    /^\.agents\//,
-    /^\.scratch\//,
-    /^skills-lock\.json$/,
-    /^docs\/research\/impeccable-source-research\.md$/,
-  ]) {
-    assert.equal(files.some((path) => forbidden.test(path)), false, `tracked forbidden path: ${forbidden}`);
-  }
+  const forbidden = files.filter(isForbiddenReleasePath);
+  assert.deepEqual(forbidden, []);
 });
 
 test('public policy surface and local Markdown links are complete', async () => {
