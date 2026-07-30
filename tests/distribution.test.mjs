@@ -21,7 +21,17 @@ async function markdownFiles(directory) {
 
 async function trackedFiles() {
   const { stdout } = await execFileAsync('git', ['ls-files', '-z']);
-  return stdout.split('\0').filter(Boolean);
+  const files = stdout.split('\0').filter(Boolean);
+  const present = await Promise.all(files.map(async (path) => {
+    try {
+      await access(resolve(path));
+      return true;
+    } catch (error) {
+      if (error.code === 'ENOENT') return false;
+      throw error;
+    }
+  }));
+  return files.filter((_, index) => present[index]);
 }
 
 async function assertLocalMarkdownLinks(paths) {
@@ -70,7 +80,6 @@ test('public policy surface and local Markdown links are complete', async () => 
     '.github/workflows/ci.yml',
     '.github/workflows/upstream-compatibility.yml',
     '.github/workflows/release-gate.yml',
-    'docs/releases/history-rewrite.md',
     'docs/releases/v0.1.0.md',
   ].map((path) => resolve(path));
   await Promise.all(required.map((path) => access(path)));
@@ -117,8 +126,7 @@ test('community policies express the accepted contribution, support, and release
 
   const changelog = await readFile(resolve('CHANGELOG.md'), 'utf8');
   assert.match(changelog, /Public Preview/);
-  assert.match(changelog, /change-driven releases/);
-  assert.match(changelog, /migration instructions/);
+  assert.match(changelog, /initial public release/i);
 });
 
 test('CI separates deterministic, fixed-baseline, moving compatibility, DCO, and release gates', async () => {

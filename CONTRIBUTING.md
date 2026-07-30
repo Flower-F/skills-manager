@@ -49,4 +49,4 @@ The sign-off certifies that you have the right to submit the contribution under 
 
 ## Review and support
 
-Keep changes focused and explain user-visible behavior and migration impact. Ordinary support and review are best effort, with no response or resolution SLA. See [Changelog](CHANGELOG.md) for Public Preview compatibility expectations.
+Keep changes focused and explain user-visible behavior. Ordinary support and review are best effort, with no response or resolution SLA. See the [changelog](CHANGELOG.md) for published changes.

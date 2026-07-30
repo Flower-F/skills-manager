@@ -10,7 +10,6 @@
     "typecheck": "node --check skills/skills-manager/scripts/customization-patch.mjs && node --check scripts/*.mjs && node --check tests/*.mjs",
     "check:distribution": "node --test tests/distribution.test.mjs",
     "check:dco": "node scripts/check-dco.mjs",
-    "check:history": "node scripts/verify-history.mjs",
     "smoke:clean": "node scripts/smoke-clean-checkout.mjs"
   },
   "engines": {

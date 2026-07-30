@@ -28,9 +28,9 @@ GitHub through `npx skills` is the only supported distribution channel. Skills M
 
 ## Compatibility and preview policy
 
-The project supports Node.js 22 and 24 (`node >=22`). Its initial upstream CLI compatibility window is `npx skills >=1.5.19 <2.0.0`: CI tests 1.5.19 deterministically and monitors the latest supported 1.x on a schedule. Upstream 2.x is unsupported until a future release validates it.
+The project supports Node.js 22 and 24 (`node >=22`). Its initial upstream CLI compatibility window is `npx skills >=1.5.19 <2.0.0`: CI tests 1.5.19 deterministically and monitors the latest supported 1.x on a schedule. Upstream 2.x is unsupported.
 
-During Public Preview, the workflow, Intent document format, and helper output may change. Breaking 0.x changes are disclosed in the [changelog](CHANGELOG.md) and release notes; changes affecting existing Intent documents include migration guidance and never silently discard or semantically rewrite an Intent. Releases are change-driven, with urgent security fixes published when needed.
+The workflow, Intent document format, and helper output may change during Public Preview.
 
 ## Responsibilities
 
