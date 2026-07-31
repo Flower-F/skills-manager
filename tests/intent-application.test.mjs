@@ -97,6 +97,35 @@ test('Update preflight inspects both scopes and returns the exact active Intent 
   assert.deepEqual(observed.map(({ argv }) => argv), [['skills', 'list', '--json'], ['skills', 'list', '--json', '--global']]);
 });
 
+test('Update preflight ignores malformed source identity on unrelated unmanaged Skills', async () => {
+  const root = await temp('skills-manager-preflight-unmanaged-');
+  const project = join(root, 'project');
+  const installed = join(project, 'alpha');
+  await write(join(installed, 'SKILL.md'), '---\nname: alpha\n---\n');
+  const fake = await fakeNpx(join(root, 'fake'));
+  const unmanaged = {
+    name: 'unmanaged',
+    path: join(root, 'home/unmanaged'),
+    scope: 'global',
+    agents: ['Other Agent'],
+    source: null,
+    sourceUrl: null,
+    sourceType: null,
+  };
+  const result = await run(['preflight', '--name', 'alpha'], {
+    cwd: project,
+    fake,
+    env: {
+      FAKE_PROJECT_LIST: JSON.stringify([installation('alpha', installed)]),
+      FAKE_GLOBAL_LIST: JSON.stringify([unmanaged]),
+    },
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.json.status, 'complete');
+  assert.equal(result.json.installation.name, 'alpha');
+  assert.equal(result.json.installation.scope, 'project');
+});
+
 test('Update preflight returns an absent Intent state and resolves explicit cross-scope selection', async () => {
   const root = await temp('skills-manager-preflight-scope-');
   const project = join(root, 'project');
@@ -131,6 +160,7 @@ test('Update preflight rejects incomplete scope inspection, malformed identity, 
     ['global list failure', { ...baseEnv, FAKE_GLOBAL_FAIL: '1' }, 'listing_failed'],
     ['malformed project JSON', { ...baseEnv, FAKE_PROJECT_MALFORMED: '1' }, 'malformed_listing'],
     ['malformed required field', { FAKE_PROJECT_LIST: JSON.stringify([{ ...installation('alpha', installed), agents: [] }]) }, 'malformed_listing'],
+    ['malformed selected source type', { FAKE_PROJECT_LIST: JSON.stringify([{ ...installation('alpha', installed), sourceType: null }]) }, 'malformed_listing'],
     ['empty normalized source', { FAKE_PROJECT_LIST: JSON.stringify([{ ...installation('alpha', installed), source: '.git', sourceUrl: '.git' }]) }, 'malformed_listing'],
   ];
   for (const [label, env, code] of cases) await t.test(label, async () => {

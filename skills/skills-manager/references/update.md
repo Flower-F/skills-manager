@@ -11,7 +11,7 @@ An **Update** advances selected Installations through one upstream package opera
    node <skill-directory>/scripts/intent-application.mjs preflight --name <skill-name> --scope <project|global>
    ```
 
-   Preflight always reads both project and global public listings, resolves exactly one Installation, and validates its exact scope-specific Intent document. Any failed scope inspection, malformed identity, ambiguity, or malformed matching Intent blocks mutation; do not run an upstream Update.
+   Preflight always reads both project and global public listings, resolves exactly one Installation, and validates its exact scope-specific Intent document. Any failed scope inspection, unidentifiable listing entry, malformed selected identity, ambiguity, or malformed matching Intent blocks mutation; do not run an upstream Update. Malformed source metadata on an unrelated named Installation does not block the selected Update.
 2. Use the returned scope explicitly in one direct upstream operation. Do not route this command through the helper or another package-command wrapper:
 
    ```sh

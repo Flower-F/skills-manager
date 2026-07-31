@@ -223,7 +223,7 @@ async function runSkillsCommand(args, cwd = process.cwd()) {
   return { exitCode, stdout: Buffer.concat(output.stdout).toString('utf8'), stderr: Buffer.concat(output.stderr).toString('utf8') };
 }
 
-async function runList(scope, cwd = process.cwd()) {
+async function runList(scope, cwd = process.cwd(), selectedNames) {
   const result = await runSkillsCommand(['list', '--json', ...(scope === 'global' ? ['--global'] : [])], cwd);
   if (result.exitCode !== 0) throw new OperationError('listing_failed', `Public ${scope} Installation listing failed${result.stderr.trim() ? `: ${result.stderr.trim()}` : '.'}`);
   let entries;
@@ -233,7 +233,12 @@ async function runList(scope, cwd = process.cwd()) {
     throw new OperationError('malformed_listing', `Public ${scope} Installation listing returned malformed JSON.`);
   }
   if (!Array.isArray(entries)) throw new OperationError('malformed_listing', `Public ${scope} Installation listing did not return an array.`);
-  return entries.map((entry) => validateEntry(entry, scope));
+  const selected = selectedNames === undefined ? entries : entries.filter((entry) => {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new OperationError('malformed_listing', 'Public list output contains a malformed Installation.');
+    if (typeof entry.name !== 'string' || !entry.name.trim()) throw new OperationError('malformed_listing', 'Installation field name is missing or malformed.');
+    return selectedNames.has(entry.name);
+  });
+  return selected.map((entry) => validateEntry(entry, scope));
 }
 
 function intentDirectory(scope) {
@@ -319,11 +324,12 @@ async function preflight(options) {
   const requests = options.installations === undefined
     ? null
     : stableInstallations(parseBatchInput(options.installations, ['name'], {}, ['scope']));
+  const selectedNames = new Set((requests ?? [options]).map(({ name }) => name));
   let project;
   let global;
   try {
-    project = await runList('project');
-    global = await runList('global');
+    project = await runList('project', process.cwd(), selectedNames);
+    global = await runList('global', process.cwd(), selectedNames);
   } catch (error) {
     if (!requests) throw error;
     return { version: VERSION, operation: 'preflight', status: 'failed', results: requests.map((request) => ({ request, status: 'failed', error: machineError(error) })) };

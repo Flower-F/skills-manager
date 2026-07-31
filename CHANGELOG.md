@@ -2,6 +2,10 @@
 
 All notable changes to Skills Manager are documented here.
 
+## Unreleased
+
+- Allow Update preflight to ignore malformed source metadata on unrelated named unmanaged Skills while preserving strict validation for selected Installations.
+
 ## [0.1.0] - 2026-07-30
 
 Initial public release as a Public Preview.
