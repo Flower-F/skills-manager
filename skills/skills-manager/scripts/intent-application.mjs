@@ -133,9 +133,15 @@ function publicSource(entry) {
   return normalized;
 }
 
-function validateEntry(entry, expectedScope) {
+function publicEntryName(entry) {
   if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new OperationError('malformed_listing', 'Public list output contains a malformed Installation.');
-  for (const field of ['name', 'path', 'scope']) {
+  if (typeof entry.name !== 'string' || !entry.name.trim()) throw new OperationError('malformed_listing', 'Installation field name is missing or malformed.');
+  return entry.name;
+}
+
+function validateEntry(entry, expectedScope) {
+  publicEntryName(entry);
+  for (const field of ['path', 'scope']) {
     if (typeof entry[field] !== 'string' || !entry[field].trim()) throw new OperationError('malformed_listing', `Installation field ${field} is missing or malformed.`);
   }
   if (!Array.isArray(entry.agents) || entry.agents.length === 0 || entry.agents.some((agent) => typeof agent !== 'string' || !agent.trim())) {
@@ -233,11 +239,7 @@ async function runList(scope, cwd = process.cwd(), selectedNames) {
     throw new OperationError('malformed_listing', `Public ${scope} Installation listing returned malformed JSON.`);
   }
   if (!Array.isArray(entries)) throw new OperationError('malformed_listing', `Public ${scope} Installation listing did not return an array.`);
-  const selected = selectedNames === undefined ? entries : entries.filter((entry) => {
-    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) throw new OperationError('malformed_listing', 'Public list output contains a malformed Installation.');
-    if (typeof entry.name !== 'string' || !entry.name.trim()) throw new OperationError('malformed_listing', 'Installation field name is missing or malformed.');
-    return selectedNames.has(entry.name);
-  });
+  const selected = selectedNames === undefined ? entries : entries.filter((entry) => selectedNames.has(publicEntryName(entry)));
   return selected.map((entry) => validateEntry(entry, scope));
 }
 
