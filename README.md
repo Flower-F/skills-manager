@@ -9,7 +9,7 @@
 Skills Manager helps you install and update Agent Skills without losing the changes you want to keep. A **Patch** is one approved change that Skills Manager keeps across Updates.
 
 > [!IMPORTANT]
-> `v0.1.0` is a **Public Preview**. The Patch contract may change before a stable release.
+> `v0.1.0` is a **Public Preview**. 
 
 ## Quick start
 
