@@ -1,52 +1,50 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="470" viewBox="0 0 1200 470" role="img" aria-labelledby="title desc">
-  <title id="title">Skills Manager 的工作方式</title>
-  <desc id="desc">一个四步工作流：通过 npx skills 选择 Skill，批准 Intent，在自定义前保存 Intent，然后更新上游内容并以语义化方式重新应用和审查 Intent。</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="430" viewBox="0 0 1200 430" role="img" aria-labelledby="title desc">
+  <title id="title">三步使用 Skills Manager</title>
+  <desc id="desc">选择 Skill，说明想保留哪项改动，然后照常更新，Skills Manager 会继续保留该改动。</desc>
 
-  <rect width="1200" height="470" rx="28" fill="#F7F4ED"/>
-  <text x="64" y="66" fill="#0B1220" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="42" font-weight="750">语义层，而不是另一个包管理器</text>
-  <text x="64" y="101" fill="#526071" font-family="ui-monospace, SFMono-Regular, Menlo, PingFang SC, sans-serif" font-size="18">npx skills 管理包 · Skills Manager 管理已批准的结果</text>
+  <rect width="1200" height="430" rx="28" fill="#F7F4ED"/>
+  <text x="64" y="64" fill="#0B1220" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="42" font-weight="760">只需三步</text>
+  <text x="64" y="101" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="21">不用重放文件修改，只要告诉 Skills Manager 哪个结果需要一直保留。</text>
 
-  <path d="M190 216H1010" stroke="#CBD5E1" stroke-width="4" stroke-linecap="round"/>
-  <path d="M316 216H1010" stroke="#2DD4BF" stroke-width="4" stroke-linecap="round"/>
-
-  <g transform="translate(70 158)">
-    <circle cx="58" cy="58" r="58" fill="#0B1220"/>
-    <text x="58" y="68" text-anchor="middle" fill="#F7F4ED" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="28" font-weight="700">01</text>
-    <text x="58" y="158" text-anchor="middle" fill="#0B1220" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="22" font-weight="700">选择</text>
-    <text x="58" y="188" text-anchor="middle" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="18">发现或选择</text>
-    <text x="58" y="214" text-anchor="middle" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="18">使用 npx skills</text>
+  <g id="step-one" transform="translate(64 142)">
+    <rect width="316" height="190" rx="20" fill="#FFFFFF" stroke="#D8D3C7" stroke-width="2"/>
+    <circle cx="46" cy="46" r="24" fill="#0B1220"/>
+    <text x="46" y="55" text-anchor="middle" fill="#FFFFFF" font-family="ui-monospace, SFMono-Regular, Menlo, PingFang SC, sans-serif" font-size="22" font-weight="700">1</text>
+    <text x="28" y="102" fill="#0B1220" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="27" font-weight="750">选择一个 Skill</text>
+    <text x="28" y="140" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="20">按需求查找，或者提供</text>
+    <text x="28" y="169" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="20">你已经信任的来源。</text>
   </g>
 
-  <g transform="translate(338 158)">
-    <circle cx="58" cy="58" r="58" fill="#12312F" stroke="#2DD4BF" stroke-width="3"/>
-    <text x="58" y="68" text-anchor="middle" fill="#99F6E4" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="28" font-weight="700">02</text>
-    <text x="58" y="158" text-anchor="middle" fill="#0B1220" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="22" font-weight="700">批准</text>
-    <text x="58" y="188" text-anchor="middle" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="18">明确你想要的</text>
-    <text x="58" y="214" text-anchor="middle" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="18">语义结果</text>
+  <g transform="translate(394 223)">
+    <path d="M0 0h42" stroke="#94A3B8" stroke-width="4" stroke-linecap="round"/>
+    <path d="M33-9l10 9-10 9" fill="none" stroke="#94A3B8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
   </g>
 
-  <g transform="translate(606 158)">
-    <circle cx="58" cy="58" r="58" fill="#12312F" stroke="#2DD4BF" stroke-width="3"/>
-    <text x="58" y="68" text-anchor="middle" fill="#99F6E4" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="28" font-weight="700">03</text>
-    <text x="58" y="158" text-anchor="middle" fill="#0B1220" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="22" font-weight="700">记录</text>
-    <text x="58" y="188" text-anchor="middle" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="18">编辑前保存</text>
-    <text x="58" y="214" text-anchor="middle" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="18">Intent</text>
+  <g id="step-two" transform="translate(450 142)">
+    <rect width="316" height="190" rx="20" fill="#FFFFFF" stroke="#2DD4BF" stroke-width="3"/>
+    <circle cx="46" cy="46" r="24" fill="#12312F"/>
+    <text x="46" y="55" text-anchor="middle" fill="#99F6E4" font-family="ui-monospace, SFMono-Regular, Menlo, PingFang SC, sans-serif" font-size="22" font-weight="700">2</text>
+    <text x="28" y="102" fill="#0B1220" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="27" font-weight="750">说出想保留的改动</text>
+    <text x="28" y="140" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="20">确认一项清楚、明确的改动。</text>
+    <text x="28" y="169" fill="#0F766E" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="20" font-weight="700">这项改动就是 Patch。</text>
   </g>
 
-  <g transform="translate(874 158)">
-    <circle cx="58" cy="58" r="58" fill="#12312F" stroke="#F59E0B" stroke-width="3"/>
-    <text x="58" y="68" text-anchor="middle" fill="#FBBF24" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="28" font-weight="700">04</text>
-    <text x="58" y="158" text-anchor="middle" fill="#0B1220" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="22" font-weight="700">更新</text>
-    <text x="58" y="188" text-anchor="middle" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="18">以语义方式重新应用</text>
-    <text x="58" y="214" text-anchor="middle" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="18">并审查</text>
+  <g transform="translate(780 223)">
+    <path d="M0 0h42" stroke="#94A3B8" stroke-width="4" stroke-linecap="round"/>
+    <path d="M33-9l10 9-10 9" fill="none" stroke="#94A3B8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
   </g>
 
-  <g transform="translate(1024 190)">
-    <path d="M0 26h78" stroke="#F59E0B" stroke-width="3" stroke-linecap="round"/>
-    <path d="M68 16l10 10-10 10" fill="none" stroke="#F59E0B" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-    <text x="39" y="63" text-anchor="middle" fill="#9A6700" font-family="ui-monospace, SFMono-Regular, Menlo, PingFang SC, sans-serif" font-size="16">审查</text>
+  <g id="step-three" transform="translate(836 142)">
+    <rect width="300" height="190" rx="20" fill="#12312F"/>
+    <circle cx="46" cy="46" r="24" fill="#2DD4BF"/>
+    <path d="M35 46l7 7 14-18" fill="none" stroke="#062925" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="28" y="102" fill="#F0FDFA" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="27" font-weight="750">照常更新</text>
+    <text x="28" y="140" fill="#CCFBF1" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="20">Skill 获得上游更新，</text>
+    <text x="28" y="169" fill="#5EEAD4" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="20" font-weight="700">你的改动仍然保留。</text>
   </g>
 
-  <rect x="64" y="420" width="1072" height="2" fill="#D8D3C7"/>
-  <text x="64" y="450" fill="#526071" font-family="ui-monospace, SFMono-Regular, Menlo, PingFang SC, sans-serif" font-size="17">Intent = 期望行为 · 而不是需要重放的文本补丁</text>
+  <g transform="translate(64 360)">
+    <rect width="1072" height="42" rx="21" fill="#E1F7F3"/>
+    <text x="536" y="28" text-anchor="middle" fill="#0F766E" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, PingFang SC, sans-serif" font-size="20" font-weight="700">Patch = 一项经你批准、希望 Skills Manager 持续保留的改动</text>
+  </g>
 </svg>

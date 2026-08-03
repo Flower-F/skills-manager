@@ -1,4 +1,4 @@
 interface:
   display_name: "Skills Manager"
-  short_description: "Manage Skills through npx and semantic Intents"
+  short_description: "Keep approved Skill changes across updates"
   default_prompt: "Use $skills-manager to manage an Agent skill in this project."

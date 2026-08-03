@@ -18,11 +18,11 @@ body:
     id: outcome
     attributes:
       label: Desired outcome
-      description: Describe user-visible behavior, including effects on existing Intents.
+      description: Describe user-visible behavior, including effects on existing Patches.
     validations:
       required: true
   - type: textarea
     id: migration
     attributes:
-      label: Compatibility and migration
-      description: Identify breaking 0.x behavior and proposed migration guidance, if any.
+      label: Compatibility
+      description: Identify breaking 0.x behavior and the intended current contract.

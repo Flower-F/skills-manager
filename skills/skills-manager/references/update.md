@@ -1,70 +1,29 @@
-# Semantic Update
+# Update
 
-An **Update** advances selected Installations through one upstream package operation, then preserves active Intents through direct semantic application.
+An **Update** advances an Installation to current upstream content while preserving its entire Active Patch set.
 
 ## One Installation
 
-1. Before mutation, run Update preflight. Pass `--scope project|global` only when the user has selected one member of an observed same-name cross-scope pair:
-
-   ```sh
-   node <skill-directory>/scripts/intent-application.mjs preflight --name <skill-name>
-   node <skill-directory>/scripts/intent-application.mjs preflight --name <skill-name> --scope <project|global>
-   ```
-
-   Preflight always reads both project and global public listings, resolves exactly one Installation, and validates its exact scope-specific Intent document. Any failed scope inspection, unidentifiable listing entry, malformed selected identity, ambiguity, or malformed matching Intent blocks mutation; do not run an upstream Update. Malformed source metadata on an unrelated named Installation does not block the selected Update.
-2. Use the returned scope explicitly in one direct upstream operation. Do not route this command through the helper or another package-command wrapper:
+1. Before upstream mutation, read project and global `npx skills list --json` output, resolve the exact Skill identity and Installation scope, and locate its collision-safe Patch document as defined in [Patches](patches.md). Confirm that any matching document is readable, valid, and identity-consistent. Ambiguity or invalid durable state blocks the Update.
+2. Run the ordinary package operation with the resolved scope:
 
    ```sh
    npx skills update <skill-name> --project
    npx skills update <skill-name> --global
    ```
 
-3. Exit code zero means upstream success. Preserve any upstream warnings and summarize them conversationally without parsing their wording. A non-zero exit, interruption, or platform timeout is an **Unknown mutation outcome**: mark this Installation incomplete, inspect current state through a new preflight before any retry, and never automatically retry the mutation.
-4. **No active Intent:** after upstream success, the Installation is complete. Do not capture an Intent application baseline and do not invoke `verify-fulfillment`.
-5. **Active Intent:** after upstream success, capture using the preflight snapshot's exact name, normalized source, scope, and path. This selected-scope refresh is the fourth and final ordinary `npx skills` invocation on the normal customized path. Apply every active outcome, review against the returned Baseline handle, classify every Intent, and close the handle after completion, Conflict, or cancellation.
-6. A `no_application_change` review means the desired behavior may already exist in the baseline. Classify each such outcome as a **Baseline-satisfied Intent** and let it remain active; an empty Intent application patch never proves an Intent is Upstream-fulfilled.
-7. Only when ready to propose a specific Intent as **Upstream-fulfilled**, invoke optional clean verification:
+3. If the command fails, times out, or is interrupted after mutation begins, stop this Update. Explain that the current state is uncertain; do not retry automatically and do not continue Patch work. A later user-requested Update starts from a fresh view of current state.
+4. After success, reread the selected Installation. If no Patch document exists, report completion without inventing protection for manual edits.
+5. If Active Patches exist, make the updated Installation satisfy all of them simultaneously. Adapt implementation details as needed, but obtain approval before changing any outcome, rationale, or constraint. An already-satisfied Patch remains active without an edit.
+6. Use normal task-completion judgment to verify the current Skill, then report the upstream result and any adapted, already-satisfied, or conflicting Patch conversationally. Do not create a named application phase, raw diff, second-source comparison, status record, or recovery journal.
 
-   ```sh
-   node <skill-directory>/scripts/intent-application.mjs verify-fulfillment \
-     --name <skill-name> --source <normalized-source> \
-     --scope <project|global> --path <installed-path>
-   ```
-
-   Interpret the temporary clean comparison semantically. Even when it supports the proposal, remove the Intent only after user confirmation. If verification fails, retain every affected Intent, report a warning, and allow an otherwise correct Update to complete.
-8. Report the upstream result and each applied, adapted, Baseline-satisfied, Upstream-fulfilled, incomplete, or conflicting Intent as a conversational Update summary framed as performed semantic work rather than an exact historical before/after diff.
-
-A normal customized single-Skill Update uses at most four ordinary `npx skills` invocations before optional fulfillment verification: project preflight listing, global preflight listing, the direct upstream Update, and one selected-scope capture listing.
-
-An Installation Update is complete after upstream success plus classification of every active Intent. An incomplete mutation attempt recovers only through a new preflight and a user-visible decision about whether another direct mutation is appropriate.
+When a Patch is outdated, ambiguous, incompatible with upstream content, or incompatible with another Active Patch, explain the concrete **Conflict** and wait for the user. Leave every approved Patch intact until the user decides.
 
 ## Multiple Installations
 
-1. Before any coordinated mutation, run one batch preflight for the full user-approved selection. Each entry contains `name` and optional `scope`; batch input is bounded to 256 Installations and 1 MiB:
+1. Resolve every selected Installation and readable Patch document before starting shared package mutation. Any unresolved selection blocks mutation for the selection that has not begun.
+2. Obtain approval for the exact selection, then let the main Agent coordinate the ordinary upstream package mutation.
+3. After shared mutation succeeds, handle each Installation independently. Work may proceed separately, but each worker receives only one exact Installation and its Active Patch set; package mutation remains coordinated by the main Agent.
+4. Preserve successful Installations even when another reaches a Conflict. Report each completed Installation and identify only those still waiting for user action.
 
-   ```sh
-   node <skill-directory>/scripts/intent-application.mjs preflight --installations '<selection-json>'
-   ```
-
-   Batch preflight performs one project listing and one global listing, validates every selected identity and exact Intent document, and returns deterministic per-Installation results. It completes before the upstream command. Continue only when the overall status is `complete`; a failed or ambiguous entry blocks the entire coordinated mutation.
-2. After complete preflight and approval, the main Agent invokes one `npx skills update <skill...>` direct package operation for the full selection. No helper wraps this upstream mutation.
-3. Separate no-Intent Installations, which complete after upstream success, from customized Installations. Group customized identities by scope and capture each group once:
-
-   ```sh
-   node <skill-directory>/scripts/intent-application.mjs capture \
-     --scope <project|global> --installations '<identity-json>'
-   ```
-
-   Each invocation performs one selected-scope listing regardless of requested Skill count. Batch capture returns overall `complete`, `partial`, or `failed` plus deterministic per-Installation outcomes. Every success has an independent Baseline handle; one failed capture never deletes or invalidates another handle.
-4. When concurrency is available, assign at most one subagent to each customized Installation with a successful capture. Give it only that Installation identity, path, Intent document, and independent Baseline handle. Semantic subagents edit, review, close, and return one per-Installation conclusion; package operations remain with the main Agent. Retain partial success when another Installation conflicts, fails, or is interrupted.
-5. Only when proposing one or more Intents as Upstream-fulfilled, request shared optional verification across those Installations:
-
-   ```sh
-   node <skill-directory>/scripts/intent-application.mjs verify-fulfillment \
-     --installations '<identity-json>'
-   ```
-
-   The helper groups normalized source identities and performs one clean acquisition per source, using all requested `--skill` selections supported by the public interface. Aggregate patch and changed-path metadata budgets keep batch output bounded; an evidence overflow becomes an Installation-local warning that retains its Intent and requires a smaller targeted verification. Evidence and Baseline-satisfied, Upstream-fulfilled, warning, incomplete, or conflicting conclusions remain independent per Installation. A source-group verification warning retains every affected Intent and does not roll back unrelated completed Installations.
-6. Report every completed Installation and name only incomplete Installations for user action or targeted retry. Close every successful handle through its own terminal outcome.
-
-A batch Update is complete when every Installation is either complete by its own criterion or explicitly reported as incomplete. Recovery reruns only affected Installations; successful work stays in place.
+A batch Update is complete when every selected Installation either satisfies its own Active Patch set or is explicitly reported as a Conflict or incomplete operation. One Installation never rolls back or silently changes another.

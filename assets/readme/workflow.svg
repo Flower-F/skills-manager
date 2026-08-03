@@ -1,52 +1,50 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="470" viewBox="0 0 1200 470" role="img" aria-labelledby="title desc">
-  <title id="title">How Skills Manager works</title>
-  <desc id="desc">A four-step workflow: choose through npx skills, approve an Intent, save the Intent before customizing, then update upstream and semantically reapply and review the Intent.</desc>
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="430" viewBox="0 0 1200 430" role="img" aria-labelledby="title desc">
+  <title id="title">Skills Manager in three steps</title>
+  <desc id="desc">Choose a Skill, say which change to keep, then update normally while Skills Manager preserves that change.</desc>
 
-  <rect width="1200" height="470" rx="28" fill="#F7F4ED"/>
-  <text x="64" y="66" fill="#0B1220" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="42" font-weight="750">A semantic layer, not another package manager</text>
-  <text x="64" y="101" fill="#526071" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18">npx skills owns packages · Skills Manager owns the approved outcome</text>
+  <rect width="1200" height="430" rx="28" fill="#F7F4ED"/>
+  <text x="64" y="64" fill="#0B1220" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="42" font-weight="760">Three simple steps</text>
+  <text x="64" y="101" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="21">No patch files to replay. Just tell Skills Manager what result should stay.</text>
 
-  <path d="M190 216H1010" stroke="#CBD5E1" stroke-width="4" stroke-linecap="round"/>
-  <path d="M316 216H1010" stroke="#2DD4BF" stroke-width="4" stroke-linecap="round"/>
-
-  <g transform="translate(70 158)">
-    <circle cx="58" cy="58" r="58" fill="#0B1220"/>
-    <text x="58" y="68" text-anchor="middle" fill="#F7F4ED" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="28" font-weight="700">01</text>
-    <text x="58" y="158" text-anchor="middle" fill="#0B1220" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="22" font-weight="700">Choose</text>
-    <text x="58" y="188" text-anchor="middle" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18">Discover or select</text>
-    <text x="58" y="214" text-anchor="middle" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18">with npx skills</text>
+  <g id="step-one" transform="translate(64 142)">
+    <rect width="316" height="190" rx="20" fill="#FFFFFF" stroke="#D8D3C7" stroke-width="2"/>
+    <circle cx="46" cy="46" r="24" fill="#0B1220"/>
+    <text x="46" y="55" text-anchor="middle" fill="#FFFFFF" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" font-weight="700">1</text>
+    <text x="28" y="102" fill="#0B1220" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="27" font-weight="750">Choose a Skill</text>
+    <text x="28" y="140" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20">Discover one or bring</text>
+    <text x="28" y="169" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20">a source you already trust.</text>
   </g>
 
-  <g transform="translate(338 158)">
-    <circle cx="58" cy="58" r="58" fill="#12312F" stroke="#2DD4BF" stroke-width="3"/>
-    <text x="58" y="68" text-anchor="middle" fill="#99F6E4" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="28" font-weight="700">02</text>
-    <text x="58" y="158" text-anchor="middle" fill="#0B1220" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="22" font-weight="700">Approve</text>
-    <text x="58" y="188" text-anchor="middle" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18">State the semantic</text>
-    <text x="58" y="214" text-anchor="middle" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18">outcome you want</text>
+  <g transform="translate(394 223)">
+    <path d="M0 0h42" stroke="#94A3B8" stroke-width="4" stroke-linecap="round"/>
+    <path d="M33-9l10 9-10 9" fill="none" stroke="#94A3B8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
   </g>
 
-  <g transform="translate(606 158)">
-    <circle cx="58" cy="58" r="58" fill="#12312F" stroke="#2DD4BF" stroke-width="3"/>
-    <text x="58" y="68" text-anchor="middle" fill="#99F6E4" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="28" font-weight="700">03</text>
-    <text x="58" y="158" text-anchor="middle" fill="#0B1220" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="22" font-weight="700">Record</text>
-    <text x="58" y="188" text-anchor="middle" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18">Save the Intent</text>
-    <text x="58" y="214" text-anchor="middle" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18">before editing</text>
+  <g id="step-two" transform="translate(450 142)">
+    <rect width="316" height="190" rx="20" fill="#FFFFFF" stroke="#2DD4BF" stroke-width="3"/>
+    <circle cx="46" cy="46" r="24" fill="#12312F"/>
+    <text x="46" y="55" text-anchor="middle" fill="#99F6E4" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="22" font-weight="700">2</text>
+    <text x="28" y="102" fill="#0B1220" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="27" font-weight="750">Say what to keep</text>
+    <text x="28" y="140" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20">Approve one clear change.</text>
+    <text x="28" y="169" fill="#0F766E" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20" font-weight="700">That change is a Patch.</text>
   </g>
 
-  <g transform="translate(874 158)">
-    <circle cx="58" cy="58" r="58" fill="#12312F" stroke="#F59E0B" stroke-width="3"/>
-    <text x="58" y="68" text-anchor="middle" fill="#FBBF24" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="28" font-weight="700">04</text>
-    <text x="58" y="158" text-anchor="middle" fill="#0B1220" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="22" font-weight="700">Update</text>
-    <text x="58" y="188" text-anchor="middle" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18">Reapply semantically</text>
-    <text x="58" y="214" text-anchor="middle" fill="#526071" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="18">and review</text>
+  <g transform="translate(780 223)">
+    <path d="M0 0h42" stroke="#94A3B8" stroke-width="4" stroke-linecap="round"/>
+    <path d="M33-9l10 9-10 9" fill="none" stroke="#94A3B8" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
   </g>
 
-  <g transform="translate(1024 190)">
-    <path d="M0 26h78" stroke="#F59E0B" stroke-width="3" stroke-linecap="round"/>
-    <path d="M68 16l10 10-10 10" fill="none" stroke="#F59E0B" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-    <text x="39" y="63" text-anchor="middle" fill="#9A6700" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">REVIEW</text>
+  <g id="step-three" transform="translate(836 142)">
+    <rect width="300" height="190" rx="20" fill="#12312F"/>
+    <circle cx="46" cy="46" r="24" fill="#2DD4BF"/>
+    <path d="M35 46l7 7 14-18" fill="none" stroke="#062925" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="28" y="102" fill="#F0FDFA" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="27" font-weight="750">Update normally</text>
+    <text x="28" y="140" fill="#CCFBF1" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20">The Skill moves forward.</text>
+    <text x="28" y="169" fill="#5EEAD4" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20" font-weight="700">Your change stays.</text>
   </g>
 
-  <rect x="64" y="420" width="1072" height="2" fill="#D8D3C7"/>
-  <text x="64" y="450" fill="#526071" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17">Intent = desired behavior · not a textual patch to replay</text>
+  <g transform="translate(64 360)">
+    <rect width="1072" height="42" rx="21" fill="#E1F7F3"/>
+    <text x="536" y="28" text-anchor="middle" fill="#0F766E" font-family="-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="20" font-weight="700">Patch = one approved change you want Skills Manager to keep</text>
+  </g>
 </svg>

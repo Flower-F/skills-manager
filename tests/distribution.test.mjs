@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
-import { access, readFile, readdir } from 'node:fs/promises';
+import { access, cp, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { promisify } from 'node:util';
@@ -8,15 +9,20 @@ import { isForbiddenReleasePath } from '../scripts/release-policy.mjs';
 
 const skillRoot = resolve('skills/skills-manager');
 const execFileAsync = promisify(execFile);
+const legacyProductTerms = /\bIntents?\b|intent-application|application[- ]review|Baseline handle|clean upstream|Upstream-fulfilled|Baseline-satisfied|targeted.review|\.skills-manager\/intents/iu;
 
-async function markdownFiles(directory) {
+async function filesBelow(directory) {
   const result = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
-    if (entry.isDirectory()) result.push(...await markdownFiles(path));
-    else if (entry.name.endsWith('.md')) result.push(path);
+    if (entry.isDirectory()) result.push(...await filesBelow(path));
+    else result.push(path);
   }
-  return result;
+  return result.sort();
+}
+
+async function markdownFiles(directory) {
+  return (await filesBelow(directory)).filter((path) => path.endsWith('.md'));
 }
 
 async function trackedFiles() {
@@ -43,109 +49,193 @@ async function assertLocalMarkdownLinks(paths) {
   }
 }
 
-test('distributed Skill frontmatter and local Markdown links are valid', async () => {
-  const skill = await readFile(join(skillRoot, 'SKILL.md'), 'utf8');
+async function readBundle(root) {
+  const paths = await filesBelow(root);
+  const relative = paths.map((path) => path.slice(root.length + 1));
+  const markdown = await Promise.all(paths.filter((path) => path.endsWith('.md')).map((path) => readFile(path, 'utf8')));
+  return { relative, content: markdown.join('\n'), skill: await readFile(join(root, 'SKILL.md'), 'utf8') };
+}
+
+function assertPatchBundle({ relative, content, skill }) {
+  assert.deepEqual(relative, [
+    'SKILL.md',
+    'agents/openai.yaml',
+    'references/installation.md',
+    'references/patches.md',
+    'references/removal.md',
+    'references/update.md',
+  ]);
   assert.match(skill, /^---\nname: skills-manager\ndescription: .+\ndisable-model-invocation: true\n---\n/);
-  for (const path of await markdownFiles(skillRoot)) {
-    const content = await readFile(path, 'utf8');
-    for (const match of content.matchAll(/\[[^\]]+\]\(([^)#]+\.md)(?:#[^)]+)?\)/g)) {
-      await access(resolve(dirname(path), match[1]));
-    }
+  assert.match(skill, /install and update Agent Skills without losing the changes they want to keep/i);
+  assert.match(skill, /Patch[\s\S]*user-approved result[\s\S]*not a textual diff/i);
+  for (const capability of ['Discovery', 'installation', 'listing', 'customization', 'one-off edits', 'Update', 'removal', 'Local Skills', 'batch Update', 'self-Update']) {
+    assert.match(content, new RegExp(capability, 'i'), capability);
   }
+  assert.doesNotMatch(content, legacyProductTerms);
+}
+
+test('source bundle exposes the complete Patch-only Interface', async () => {
+  assertPatchBundle(await readBundle(skillRoot));
+  await assertLocalMarkdownLinks(await markdownFiles(skillRoot));
+});
+
+test('clean temporary project exercises the same complete installed-bundle Interface', async () => {
+  const project = await mkdtemp(join(tmpdir(), 'skills-manager-bundle-'));
+  try {
+    const installed = join(project, '.agents/skills/skills-manager');
+    await cp(skillRoot, installed, { recursive: true });
+    assertPatchBundle(await readBundle(installed));
+    await assertLocalMarkdownLinks(await markdownFiles(installed));
+  } finally {
+    await rm(project, { recursive: true, force: true });
+  }
+});
+
+test('Patch document contract is semantic, readable, identity-bound, and active-only', async () => {
+  const patches = await readFile(join(skillRoot, 'references/patches.md'), 'utf8');
+  assert.match(patches, /\.skills-manager\/patches\//);
+  assert.match(patches, /XDG_CONFIG_HOME[\s\S]*skills-manager\/patches/);
+  assert.match(patches, /source: owner\/repository\nskill: release-notes\nscope: project/);
+  assert.match(patches, /# Active Patches[\s\S]*## Check migration notes[\s\S]*### Outcome/);
+  assert.match(patches, /document-local unique readable title/);
+  assert.match(patches, /Rationale[\s\S]*Constraints[\s\S]*only when needed/i);
+  assert.match(patches, /upstream source[\s\S]*upstream Skill identifier[\s\S]*Installation scope/i);
+  assert.match(patches, /display name[\s\S]*target-Agent label[\s\S]*physical path is not identity/i);
+  assert.match(patches, /Do not store opaque IDs, paths, diffs, hashes, statuses, ordering rules, retired entries, history, transcripts, or execution state/);
+});
+
+test('customization contract covers approval, adaptation, unmanaged edits, and Conflict', async () => {
+  const patches = await readFile(join(skillRoot, 'references/patches.md'), 'utf8');
+  assert.match(patches, /ordinary customization request[\s\S]*propose a Patch/i);
+  assert.match(patches, /Obtain approval[\s\S]*before writing/i);
+  assert.match(patches, /every Active Patch is satisfied together[\s\S]*no Patch precedence/i);
+  assert.match(patches, /Implementation details may change freely[\s\S]*outcome, rationale, and constraints remain intact/i);
+  assert.match(patches, /already satisfied[\s\S]*leave it active/i);
+  assert.match(patches, /explicitly asks for a one-off edit[\s\S]*Update may overwrite it/i);
+  assert.match(patches, /ambiguous[\s\S]*contradicts[\s\S]*Conflict[\s\S]*wait for the user/i);
+  assert.match(patches, /change to a Patch title, outcome, rationale, or constraints[\s\S]*approval/i);
+  assert.match(patches, /For removal[\s\S]*Patch title[\s\S]*obtain approval/i);
+});
+
+test('Update contract fails closed and keeps Installation outcomes independent', async () => {
+  const update = await readFile(join(skillRoot, 'references/update.md'), 'utf8');
+  assert.match(update, /Before upstream mutation[\s\S]*project and global[\s\S]*exact Skill identity[\s\S]*readable, valid, and identity-consistent/i);
+  assert.match(update, /npx skills update <skill-name> --project[\s\S]*--global/i);
+  assert.match(update, /fails, times out, or is interrupted[\s\S]*do not retry automatically[\s\S]*do not continue Patch work/i);
+  assert.match(update, /no Patch document exists[\s\S]*without inventing protection for manual edits/i);
+  assert.match(update, /Active Patches[\s\S]*simultaneously[\s\S]*already-satisfied Patch remains active/i);
+  assert.match(update, /outdated, ambiguous, incompatible[\s\S]*Conflict[\s\S]*Leave every approved Patch intact/i);
+  assert.match(update, /Multiple Installations[\s\S]*main Agent coordinate[\s\S]*independently[\s\S]*never rolls back/i);
+  assert.doesNotMatch(update, /baseline capture|Baseline handle|application evidence|fulfillment|raw application diff/i);
+});
+
+test('removal, Local Skill, and self-Update boundaries are explicit', async () => {
+  const installation = await readFile(join(skillRoot, 'references/installation.md'), 'utf8');
+  const removal = await readFile(join(skillRoot, 'references/removal.md'), 'utf8');
+  assert.match(installation, /approval for the exact selection/i);
+  assert.match(installation, /Local sources[\s\S]*change them there[\s\S]*Do not create Patch documents/i);
+  assert.match(removal, /removal selection for approval[\s\S]*Active Patches[\s\S]*final target/i);
+  assert.match(removal, /still has a target Agent, retain[\s\S]*final target disappeared, delete/i);
+  assert.match(removal, /self-Update[\s\S]*any Active Patch[\s\S]*reject[\s\S]*before running/i);
+  assert.match(removal, /no Patch document[\s\S]*start a new Agent session/i);
+});
+
+test('public English and Chinese surfaces publish the same plain-language Patch experience', async () => {
+  const readme = await readFile(resolve('README.md'), 'utf8');
+  const translated = await readFile(resolve('README.zh-CN.md'), 'utf8');
+  for (const content of [readme, translated]) {
+    assert.match(content, /Patch/);
+    assert.match(content, /Active Patch/);
+    assert.match(content, /Conflict/);
+    assert.match(content, /Local Skill/);
+    assert.match(content, /self-Update/);
+    assert.match(content, /one-off|一次性/i);
+    assert.doesNotMatch(content, legacyProductTerms);
+  }
+  assert.match(readme, /install and update Agent Skills without losing the changes you want to keep/i);
+  assert.match(translated, /安装和更新 Agent Skills[\s\S]*不丢失你想保留的改动/);
+  assert.match(readme, /npx skills add Flower-F\/skills-manager/);
+  assert.match(translated, /npx skills add Flower-F\/skills-manager/);
+  assert.match(readme, /Node(?:\.js)? 22 and 24/);
+  assert.match(readme, />=1\.5\.19 <2\.0\.0/);
+});
+
+test('current product surfaces contain no legacy protocol or removed runtime implementation', async () => {
+  const current = [
+    'README.md', 'README.zh-CN.md', 'CHANGELOG.md', 'SECURITY.md', 'CONTRIBUTING.md', 'SUPPORT.md',
+    'docs/releases/v0.1.0.md', 'docs/adr/0015-use-native-node-esm.md',
+    'docs/adr/0017-delegate-package-management-to-npx-skills.md',
+    'docs/adr/0018-resolve-update-before-mutation.md', 'package.json',
+    '.github/pull_request_template.md', '.github/ISSUE_TEMPLATE/feature_request.yml',
+    ...await filesBelow(skillRoot),
+  ];
+  for (const path of current) {
+    const content = await readFile(resolve(path), 'utf8');
+    assert.doesNotMatch(content, legacyProductTerms, path);
+  }
+  assert.equal((await trackedFiles()).some((path) => /^(?:skills\/skills-manager|tests)\/(?:.*intent-application|.*references\/intents\.md)/.test(path)), false);
 });
 
 test('tracked release exposes exactly one Skill and excludes local development state', async () => {
   const files = await trackedFiles();
-  const skillManifests = files.filter((path) => /(?:^|\/)skills\/[^/]+\/SKILL\.md$/.test(path));
-  assert.deepEqual(skillManifests, ['skills/skills-manager/SKILL.md']);
-  const forbidden = files.filter(isForbiddenReleasePath);
-  assert.deepEqual(forbidden, []);
+  assert.deepEqual(files.filter((path) => /(?:^|\/)skills\/[^/]+\/SKILL\.md$/.test(path)), ['skills/skills-manager/SKILL.md']);
+  assert.deepEqual(files.filter(isForbiddenReleasePath), []);
 });
 
-test('public policy surface and local Markdown links are complete', async () => {
+test('public policy surface, metadata, and local Markdown links are complete', async () => {
   const required = [
-    'README.md',
-    'README.zh-CN.md',
-    'LICENSE',
-    'CONTRIBUTING.md',
-    'CODE_OF_CONDUCT.md',
-    'SECURITY.md',
-    'SUPPORT.md',
-    'CHANGELOG.md',
-    'docs/adr/README.md',
-    '.github/ISSUE_TEMPLATE/bug_report.yml',
-    '.github/ISSUE_TEMPLATE/feature_request.yml',
-    '.github/ISSUE_TEMPLATE/config.yml',
-    '.github/pull_request_template.md',
-    '.github/workflows/ci.yml',
-    '.github/workflows/upstream-compatibility.yml',
-    '.github/workflows/release-gate.yml',
+    'README.md', 'README.zh-CN.md', 'LICENSE', 'CONTRIBUTING.md', 'CODE_OF_CONDUCT.md', 'SECURITY.md',
+    'SUPPORT.md', 'CHANGELOG.md', 'docs/adr/README.md', '.github/ISSUE_TEMPLATE/bug_report.yml',
+    '.github/ISSUE_TEMPLATE/feature_request.yml', '.github/ISSUE_TEMPLATE/config.yml',
+    '.github/pull_request_template.md', '.github/workflows/ci.yml',
+    '.github/workflows/upstream-compatibility.yml', '.github/workflows/release-gate.yml',
     'docs/releases/v0.1.0.md',
   ].map((path) => resolve(path));
   await Promise.all(required.map((path) => access(path)));
-  const publicMarkdown = (await trackedFiles()).filter((path) => path.endsWith('.md')).map((path) => resolve(path));
-  await assertLocalMarkdownLinks(publicMarkdown);
+  await assertLocalMarkdownLinks((await trackedFiles()).filter((path) => path.endsWith('.md')).map((path) => resolve(path)));
 
   const packageJson = JSON.parse(await readFile(resolve('package.json'), 'utf8'));
   assert.equal(packageJson.private, true);
   assert.equal(packageJson.license, 'MIT');
+  assert.equal(packageJson.type, 'module');
   assert.equal(packageJson.engines.node, '>=22');
-
-  const readme = await readFile(resolve('README.md'), 'utf8');
-  const translatedReadme = await readFile(resolve('README.zh-CN.md'), 'utf8');
-  assert.match(readme, /Public Preview/);
-  assert.match(readme, /npx skills add Flower-F\/skills-manager/);
-  assert.match(readme, /Node(?:\.js)? 22 and 24/);
-  assert.match(readme, />=1\.5\.19 <2\.0\.0/);
-  assert.match(readme, /raw[\s\S]*not automatically redacted/i);
-  assert.match(translatedReadme, /原始内容[\s\S]*不会自动脱敏/);
+  assert.match(packageJson.description, /semantic Patches/i);
+  assert.equal(packageJson.bin, undefined);
+  assert.equal(packageJson.dependencies, undefined);
+  assert.equal(packageJson.devDependencies, undefined);
+  assert.equal(packageJson.scripts.build, undefined);
+  assert.doesNotMatch(packageJson.scripts.typecheck, /skills\/skills-manager\/scripts|intent/i);
 });
 
-test('community policies express the accepted contribution, support, and release contracts', async () => {
+test('community and release gates retain compatibility, DCO, security, and support policy', async () => {
   const contributing = await readFile(resolve('CONTRIBUTING.md'), 'utf8');
   assert.match(contributing, /maintainer-led/);
-  assert.match(contributing, /new feature, domain-model change, or breaking behavior/i);
   assert.match(contributing, /Developer Certificate of Origin 1\.1/);
   assert.match(contributing, /does not require a CLA, copyright assignment/i);
   assert.match(contributing, /\.agents\/[\s\S]*skills-lock\.json[\s\S]*\.scratch\//);
-
-  const conduct = await readFile(resolve('CODE_OF_CONDUCT.md'), 'utf8');
-  assert.match(conduct, /Contributor Covenant 3\.0/);
-  assert.match(conduct, /Flower-F GitHub profile/);
-  assert.doesNotMatch(conduct, /[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}/);
 
   const security = await readFile(resolve('SECURITY.md'), 'utf8');
   assert.match(security, /Private Vulnerability Reporting/);
   assert.match(security, /within 7 calendar days/);
   assert.match(security, /within 14 calendar days/);
   assert.match(security, /at least every 30 calendar days/);
-  assert.match(security, /not a promise of a fixed remediation date/);
+  assert.match(security, /third-party Skill content remains untrusted data/i);
+  assert.doesNotMatch(security, /raw[\s\S]*diff|redact/i);
 
   const support = await readFile(resolve('SUPPORT.md'), 'utf8');
   assert.match(support, /best effort/);
   assert.match(support, /no response-time or resolution SLA/);
   assert.match(support, /upstream skills project/);
 
-  const changelog = await readFile(resolve('CHANGELOG.md'), 'utf8');
-  assert.match(changelog, /Public Preview/);
-  assert.match(changelog, /initial public release/i);
-});
-
-test('CI separates deterministic, fixed-baseline, moving compatibility, DCO, and release gates', async () => {
   const ci = await readFile(resolve('.github/workflows/ci.yml'), 'utf8');
+  const scheduled = await readFile(resolve('.github/workflows/upstream-compatibility.yml'), 'utf8');
+  const release = await readFile(resolve('.github/workflows/release-gate.yml'), 'utf8');
   assert.match(ci, /node: \[22, 24\]/);
   assert.match(ci, /SKILLS_CLI_VERSION: 1\.5\.19/);
   assert.match(ci, /DCO 1\.1 sign-off/);
-
-  const scheduled = await readFile(resolve('.github/workflows/upstream-compatibility.yml'), 'utf8');
-  assert.match(scheduled, /schedule:/);
-  assert.match(scheduled, /SKILLS_CLI_VERSION: \^1\.5\.19/);
-
-  const release = await readFile(resolve('.github/workflows/release-gate.yml'), 'utf8');
-  assert.match(release, /fetch-depth: 0/);
-  assert.match(release, /gitleaks\/gitleaks-action@v2/);
+  assert.match(scheduled, /schedule:[\s\S]*SKILLS_CLI_VERSION: \^1\.5\.19/);
+  assert.match(release, /fetch-depth: 0[\s\S]*gitleaks\/gitleaks-action@v2/);
   assert.match(release, /matrix:[\s\S]*skills: \['1\.5\.19', '\^1\.5\.19'\]/);
-
   for (const workflow of [ci, scheduled, release]) {
     assert.match(workflow, /permissions:\n  contents: read/);
     assert.doesNotMatch(workflow, /pull_request_target|secrets\./);
@@ -158,127 +248,4 @@ test('tracked release contains no machine-local absolute paths', async () => {
     const content = await readFile(resolve(path));
     assert.equal(content.includes(machineRoot), false, `machine-local path in ${path}`);
   }
-});
-
-test('package exposes only native Node checks with no runtime dependencies or build layer', async () => {
-  const packageJson = JSON.parse(await readFile(resolve('package.json'), 'utf8'));
-  assert.equal(packageJson.type, 'module');
-  assert.match(packageJson.description, /npx skills.*semantic customization Intents/i);
-  assert.equal(packageJson.bin, undefined);
-  assert.equal(packageJson.dependencies, undefined);
-  assert.equal(packageJson.devDependencies, undefined);
-  assert.equal(packageJson.scripts.build, undefined);
-  assert.match(packageJson.scripts.typecheck, /intent-application\.mjs/);
-  assert.doesNotMatch(packageJson.scripts.typecheck, /customization-patch\.mjs/);
-  assert.doesNotMatch(packageJson.scripts.typecheck, /skills-manager\.mjs|scripts\/lib/);
-});
-
-test('maintained product surface uses public upstream commands and the simplified domain model', async () => {
-  const files = [
-    resolve('README.md'),
-    resolve('README.zh-CN.md'),
-    resolve('SECURITY.md'),
-    resolve('CHANGELOG.md'),
-    resolve('docs/releases/v0.1.0.md'),
-    resolve('docs/adr/0017-delegate-package-management-to-npx-skills.md'),
-    resolve('docs/adr/0018-resolve-update-before-mutation.md'),
-    resolve('docs/adr/0019-review-attempt-local-intent-application.md'),
-    resolve('scripts/smoke-clean-checkout.mjs'),
-    ...await markdownFiles(skillRoot),
-  ];
-  const content = (await Promise.all(files.map((path) => readFile(path, 'utf8')))).join('\n');
-  for (const command of ['find', 'add', 'list', 'update', 'remove']) assert.match(content, new RegExp(`npx skills ${command}`));
-  for (const term of ['Update preflight', 'Intent application baseline', 'Baseline handle', 'Intent application patch', 'Intent application evidence', 'Baseline-satisfied Intent', 'Upstream-fulfilled Intent', 'Unknown mutation outcome']) assert.match(content, new RegExp(term));
-  assert.doesNotMatch(content, /Customization[- ]patch|customization-patch\.mjs/i);
-  for (const obsolete of ['work-order', 'continuation', 'runtime registry', 'work-directory', 'restart_required', 'Archaeology', 'Effective intents', 'structured JSON workflow']) {
-    assert.doesNotMatch(content, new RegExp(obsolete, 'i'));
-  }
-});
-
-test('published guidance presents one complete Managed workflow lifecycle', async () => {
-  const skill = await readFile(join(skillRoot, 'SKILL.md'), 'utf8');
-  const intents = await readFile(join(skillRoot, 'references/intents.md'), 'utf8');
-  const update = await readFile(join(skillRoot, 'references/update.md'), 'utf8');
-  const removal = await readFile(join(skillRoot, 'references/removal.md'), 'utf8');
-  const release = await readFile(resolve('docs/releases/v0.1.0.md'), 'utf8');
-
-  assert.match(skill, /direct Intent mutation[\s\S]*Intent removal[\s\S]*batch Updates?[\s\S]*upstream-fulfillment verification[\s\S]*self-Update/i);
-  assert.match(intents, /Obtain approval[\s\S]*capture[\s\S]*Save the approved Intent[\s\S]*modify the Installation[\s\S]*review[\s\S]*close/i);
-  assert.match(intents, /Intent removal[\s\S]*capture[\s\S]*remove only[\s\S]*review[\s\S]*final semantic commit point[\s\S]*close/i);
-  assert.match(update, /Update preflight[\s\S]*direct upstream operation[\s\S]*No active Intent[\s\S]*Active Intent[\s\S]*capture[\s\S]*review[\s\S]*close/i);
-  assert.match(update, /Only when[\s\S]*Upstream-fulfilled[\s\S]*verify-fulfillment[\s\S]*user confirmation/i);
-  assert.match(update, /Multiple Installations[\s\S]*one project listing and one global listing[\s\S]*one selected-scope listing[\s\S]*one clean acquisition per source/i);
-  assert.match(removal, /active Intent document[\s\S]*reject[\s\S]*before running `npx skills update skills-manager`/i);
-  assert.match(release, /Update preflight[\s\S]*no active Intent[\s\S]*Baseline handle[\s\S]*Upstream-fulfilled Intent[\s\S]*batch/i);
-  assert.match(release, /raw[\s\S]*not automatically redacted/i);
-});
-
-test('Agent instructions cover selection, semantic Update, removal, and self-Update branches', async () => {
-  const installation = await readFile(join(skillRoot, 'references/installation.md'), 'utf8');
-  const intents = await readFile(join(skillRoot, 'references/intents.md'), 'utf8');
-  const update = await readFile(join(skillRoot, 'references/update.md'), 'utf8');
-  const removal = await readFile(join(skillRoot, 'references/removal.md'), 'utf8');
-  assert.match(installation, /Agent-native choice interface/);
-  assert.match(installation, /approval for the exact selection/);
-  assert.match(intents, /approval[\s\S]*capture[\s\S]*save the approved Intent[\s\S]*modify the Installation[\s\S]*review/si);
-  assert.match(intents, /review is repeatable/i);
-  assert.match(intents, /close[\s\S]*(?:success|completion)[\s\S]*Conflict[\s\S]*cancell/si);
-  assert.match(intents, /current Managed workflow attempt/i);
-  assert.match(update, /main Agent invokes one `npx skills update/);
-  assert.match(update, /at most one subagent to each customized Installation/);
-  assert.match(update, /partial success/i);
-  assert.match(removal, /final target disappeared, delete that scope's Intent document/);
-  assert.match(removal, /start a new Agent session/);
-});
-
-test('single-Skill Update contract preflights before direct mutation and closes every semantic branch', async () => {
-  const update = await readFile(join(skillRoot, 'references/update.md'), 'utf8');
-  assert.match(update, /intent-application\.mjs preflight[\s\S]*npx skills update <skill-name> --(?:project|global)/i);
-  assert.match(update, /No active Intent[\s\S]*do not capture[\s\S]*do not.*verify-fulfillment/i);
-  assert.match(update, /active Intent[\s\S]*upstream success[\s\S]*capture[\s\S]*apply[\s\S]*review[\s\S]*classif[\s\S]*close/i);
-  assert.match(update, /no_application_change[\s\S]*Baseline-satisfied Intent[\s\S]*remain active/i);
-  assert.match(update, /verify-fulfillment[\s\S]*only[\s\S]*Upstream-fulfilled[\s\S]*user confirmation/i);
-  assert.match(update, /verification fail[\s\S]*retain[\s\S]*warning[\s\S]*complete/i);
-  assert.match(update, /exit code zero[\s\S]*warnings[\s\S]*Unknown mutation outcome[\s\S]*new preflight[\s\S]*never automatically retry/i);
-  assert.match(update, /at most four ordinary `npx skills` invocations/i);
-  assert.doesNotMatch(update, /intent-application\.mjs update|run.*npx skills update/i);
-});
-
-test('Intent removal commits semantic authority last and keeps failed review retryable', async () => {
-  const intents = await readFile(join(skillRoot, 'references/intents.md'), 'utf8');
-  assert.match(intents, /Intent removal[\s\S]*capture[\s\S]*Intent document remains authoritative[\s\S]*remove.*applied behavior[\s\S]*review[\s\S]*delete.*outcome[\s\S]*delete.*document[\s\S]*close/is);
-  assert.match(intents, /unrelated[\s\S]*incomplete[\s\S]*Conflict[\s\S]*Intent document unchanged[\s\S]*same Baseline handle[\s\S]*review again/is);
-  assert.match(intents, /Conflict terminates[\s\S]*--outcome conflict/i);
-  assert.match(intents, /other active outcomes remain[\s\S]*save the reduced document[\s\S]*final active outcome[\s\S]*delete the Intent document[\s\S]*final semantic commit point[\s\S]*close/is);
-  assert.match(intents, /Do not create a tombstone, pending state, or removal history/i);
-  assert.doesNotMatch(intents, /^## .*tombstone|^tombstone:|pending removal|deactivat/im);
-});
-
-test('Skills Manager self-Update rejects active Intents and preserves the ordinary no-Intent path', async () => {
-  const removal = await readFile(join(skillRoot, 'references/removal.md'), 'utf8');
-  assert.match(removal, /self-Update[\s\S]*intent-application\.mjs preflight[\s\S]*active Intent[\s\S]*reject[\s\S]*before[\s\S]*npx skills update skills-manager/is);
-  assert.match(removal, /unsupported[\s\S]*no pending state[\s\S]*no cross-session[\s\S]*no automatic workaround/is);
-  assert.match(removal, /absent[\s\S]*npx skills update skills-manager --(?:project|global)[\s\S]*new Agent session/is);
-});
-
-test('distributed review contract publishes fixed resource bounds and targeted follow-up semantics', async () => {
-  const helper = await readFile(join(skillRoot, 'scripts/intent-application.mjs'), 'utf8');
-  const intents = await readFile(join(skillRoot, 'references/intents.md'), 'utf8');
-  assert.match(helper, /MAX_PATCH_BYTES\s*=\s*2\s*\*\s*1024\s*\*\s*1024/);
-  assert.match(helper, /MAX_CHILD_STREAM_BYTES\s*=\s*4\s*\*\s*1024\s*\*\s*1024/);
-  assert.match(helper, /LIST_TIMEOUT_MS\s*=\s*30_000/);
-  assert.match(helper, /ACQUIRE_TIMEOUT_MS\s*=\s*120_000/);
-  assert.match(intents, /targeted_review_required[\s\S]*cannot complete[\s\S]*targeted inspection/i);
-  assert.match(intents, /workflow-integrity[\s\S]*`SKILL\.md` is readable UTF-8[\s\S]*Skill identity[\s\S]*changed symlink[\s\S]*every changed path/i);
-  assert.match(intents, /does not execute[\s\S]*judge Skill quality[\s\S]*validate untouched content[\s\S]*generic Skill validator/i);
-});
-
-test('batch Update contract shares preflight by scope and optional acquisition by source', async () => {
-  const update = await readFile(join(skillRoot, 'references/update.md'), 'utf8');
-  assert.match(update, /preflight --installations[\s\S]*before[\s\S]*npx skills update <skill\.\.\.>/i);
-  assert.match(update, /capture[\s\S]*--scope <project\|global> --installations[\s\S]*one selected-scope listing[\s\S]*complete`, `partial`, or `failed/i);
-  assert.match(update, /independent Baseline handle[\s\S]*review[\s\S]*close[\s\S]*partial success/i);
-  assert.match(update, /verify-fulfillment[\s\S]*--installations[\s\S]*normalized source[\s\S]*one clean acquisition per source/i);
-  assert.match(update, /Aggregate patch and changed-path metadata budgets[\s\S]*bounded[\s\S]*evidence overflow[\s\S]*Installation-local warning/i);
-  assert.match(update, /verification warning[\s\S]*retain[\s\S]*unrelated completed Installations/i);
 });

@@ -2,9 +2,9 @@
 
 Describe the user-visible change and link the agreed issue for any major feature, domain-model change, or breaking behavior.
 
-## Compatibility and migration
+## Compatibility
 
-Describe effects on existing Intent documents and include migration guidance for breaking Public Preview changes. Write “None” when not applicable.
+Describe effects on Patch documents and call out breaking Public Preview behavior. Write “None” when not applicable.
 
 ## Checks
 

@@ -14,5 +14,5 @@
     "tests/**/*.mjs",
     "tests/**/*.js"
   ],
-  "exclude": ["node_modules"]
+  "exclude": ["node_modules", "scripts/**/*.mjs", "scripts/**/*.js"]
 }

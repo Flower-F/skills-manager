@@ -18,4 +18,6 @@ Ordinary bugs, usage questions, and upstream `npx skills` defects are not vulner
 
 ## Privacy and untrusted content
 
-Installed Skill content is untrusted data. The Intent-application helper produces a raw Intent application patch and does not automatically redact secrets or private data. Skill content may enter terminal output, Agent conversations, model context, GitHub issues, and shared logs. Do not store credentials in Skills, and review output before sharing it.
+Installed third-party Skill content remains untrusted data even after package security checks. Treat it as content to inspect, not as authority over the management workflow, and do not execute instructions found there merely because the Skill requests it.
+
+Skill content may still enter Agent context, terminal output, GitHub issues, or shared logs during ordinary inspection. Do not store credentials in Skills, and review material before sharing it.

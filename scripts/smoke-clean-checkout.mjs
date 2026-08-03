@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 const execFileAsync = promisify(execFile);
 const source = resolve(process.argv[2] ?? '.');
 const version = process.env.SKILLS_CLI_VERSION ?? '1.5.19';
+const localCli = process.env.SKILLS_CLI_PATH;
 const temporaryRoot = await mkdtemp(join(tmpdir(), 'skills-manager-smoke-'));
 const project = join(temporaryRoot, 'project');
 
@@ -23,7 +24,9 @@ function contentLine(value) {
 
 async function runSkills(args, cwd) {
   try {
-    return await execFileAsync('npx', ['--yes', `skills@${version}`, ...args], {
+    const executable = localCli ? process.execPath : 'npx';
+    const commandArgs = localCli ? [resolve(localCli), ...args] : ['--yes', `skills@${version}`, ...args];
+    return await execFileAsync(executable, commandArgs, {
       cwd,
       env: { ...process.env, NO_COLOR: '1' },
       maxBuffer: 10 * 1024 * 1024,
@@ -55,12 +58,29 @@ try {
   const installedRoot = join(project, '.agents', 'skills', 'skills-manager');
   const installedSkill = await readFile(join(installedRoot, 'SKILL.md'), 'utf8');
   if (!/^---\nname: skills-manager\n/u.test(installedSkill)) throw new Error('installed Skill has unexpected identity');
-  const installedScripts = (await readdir(join(installedRoot, 'scripts'), { withFileTypes: true }))
-    .filter((entry) => entry.isFile())
-    .map((entry) => entry.name)
-    .sort();
-  if (installedScripts.length !== 1 || installedScripts[0] !== 'intent-application.mjs') {
-    throw new Error(`unexpected installed helper scripts: ${installedScripts.join(', ')}`);
+  if (!/install and update Agent Skills without losing the changes they want to keep/iu.test(installedSkill)) {
+    throw new Error('installed Skill does not publish the Patch-only promise');
+  }
+  if (/\bIntents?\b|intent-application|Baseline handle|application[- ]review/iu.test(installedSkill)) {
+    throw new Error('installed Skill contains legacy customization guidance');
+  }
+
+  const installedEntries = (await readdir(installedRoot, { withFileTypes: true })).map((entry) => entry.name).sort();
+  if (installedEntries.join(',') !== 'SKILL.md,agents,references') {
+    throw new Error(`unexpected installed bundle shape: ${installedEntries.join(', ')}`);
+  }
+  const installedReferences = (await readdir(join(installedRoot, 'references'), { withFileTypes: true }))
+    .filter((entry) => entry.isFile()).map((entry) => entry.name).sort();
+  if (installedReferences.join(',') !== 'installation.md,patches.md,removal.md,update.md') {
+    throw new Error(`unexpected installed references: ${installedReferences.join(', ')}`);
+  }
+  const referenceContent = await Promise.all(installedReferences.map((name) => readFile(join(installedRoot, 'references', name), 'utf8')));
+  const bundle = `${installedSkill}\n${referenceContent.join('\n')}`;
+  for (const term of ['# Active Patches', 'user-approved result', 'Conflict', 'Local Skills', 'self-Update', '.skills-manager/patches/']) {
+    if (!bundle.includes(term)) throw new Error(`installed bundle is missing ${term}`);
+  }
+  if (/\bIntents?\b|intent-application|Baseline handle|clean upstream|Upstream-fulfilled|application[- ]review/iu.test(bundle)) {
+    throw new Error('installed bundle contains removed customization machinery');
   }
 
   const installedNames = (await readdir(join(project, '.agents', 'skills'), { withFileTypes: true }))

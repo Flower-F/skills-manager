@@ -6,7 +6,7 @@ Skills Manager helps users install and update Agent Skills without losing the ch
 
 **Patch**:
 A user-approved change that Skills Manager keeps across updates. It describes the result to preserve rather than file edits to replay.
-_Avoid_: Intent, textual diff, patch command
+_Avoid_: textual diff, patch command
 
 **Active Patch**:
 A Patch that Skills Manager must continue to preserve. It remains active until the user removes it, even when the current Skill already satisfies it without further changes.
@@ -18,7 +18,7 @@ _Avoid_: Patch stack, application queue, override chain
 
 **Patch document**:
 The human-readable collection of Active Patches belonging to one Installation. It contains no retired Patches, execution history, application status, file diffs, or implementation paths.
-_Avoid_: Intent document, update log, Patch history
+_Avoid_: update log, Patch history
 
 **Update**:
 An operation that advances an Installation to current upstream content while preserving its Active Patch set. Installations complete independently when more than one is updated.

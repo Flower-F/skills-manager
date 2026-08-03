@@ -4,7 +4,7 @@ Read the current decisions first. Superseded records are retained only to explai
 
 ## Current
 
-- [ADR-0015: Use native Node ESM without a build step](0015-use-native-node-esm.md) — the helper uses native ESM, has no build step or runtime dependencies, and supports Node 22 and later.
+- [ADR-0015: Use native Node ESM without a build step](0015-use-native-node-esm.md) — repository checks use native ESM with no build step or runtime dependencies and support Node 22 and later.
 - [ADR-0017: Delegate package management to npx skills](0017-delegate-package-management-to-npx-skills.md) — `npx skills` remains the implementation boundary for package management.
 - [ADR-0018: Resolve Update identity before mutation](0018-resolve-update-before-mutation.md) — every Update resolves its exact Installation and Patch document before upstream mutation.
 - [ADR-0020: Replace Intents with semantic Patches](0020-replace-intents-with-semantic-patches.md) — the product is rewritten around a small capability-and-boundary contract with no legacy Intent compatibility.

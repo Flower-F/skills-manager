@@ -7,5 +7,5 @@ node_modules/
 .scratch/
 skills-lock.json
 
-# Rebuildable local runtime state; Intent documents remain tracked.
+# Rebuildable local runtime state; Patch documents remain tracked.
 .skills-manager/state.json
